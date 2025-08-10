@@ -13,7 +13,7 @@ TOKEN_EXP_HOURS = 8
 
 # ---------------- DB ----------------
 def get_db_connection():
-    conn = sqlite3.connect(DB_NAME, timeout=10)  # 10 saniye timeout ile
+    conn = sqlite3.connect(DB_NAME, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -34,12 +34,12 @@ def init_db():
     cur.execute("""
     CREATE TABLE IF NOT EXISTS couriers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER, -- optional link to users.id
+        user_id INTEGER,
         first_name TEXT,
         last_name TEXT,
         email TEXT UNIQUE,
         phone TEXT,
-        status TEXT DEFAULT 'boşta', -- boşta, molada, teslimatta
+        status TEXT DEFAULT 'boşta',
         created_at TEXT
     )
     """)
@@ -53,7 +53,7 @@ def init_db():
         items TEXT,
         total_amount REAL,
         address TEXT,
-        status TEXT DEFAULT 'yeni', -- yeni, teslim alındı, teslim edildi, iptal
+        status TEXT DEFAULT 'yeni',
         courier_id INTEGER,
         payload TEXT,
         created_at TEXT
@@ -176,6 +176,60 @@ def login_user():
 
     token = generate_token(user["id"], user["role"])
     return jsonify({"token": token, "role": user["role"]})
+
+# ---------------- Admin-only Courier creation ----------------
+@app.route("/admin/couriers", methods=["POST"])
+@token_required
+def admin_create_courier():
+    if request.user_role != "admin":
+        return jsonify({"message": "Yetkisiz"}), 403
+
+    data = request.get_json() or {}
+    username = data.get("username")
+    password = data.get("password")
+
+    if not username or not password:
+        return jsonify({"message": "username ve password gerekli"}), 400
+
+    email = data.get("email")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT 1 FROM users WHERE username = ?", (username,))
+    if cur.fetchone():
+        conn.close()
+        return jsonify({"message": "Kullanıcı adı zaten kullanılıyor"}), 400
+
+    if email:
+        cur.execute("SELECT 1 FROM couriers WHERE email = ?", (email,))
+        if cur.fetchone():
+            conn.close()
+            return jsonify({"message": "Email zaten kullanılıyor"}), 400
+
+    hashed = hash_password(password)
+
+    try:
+        cur.execute(
+            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            (username, hashed, "courier", datetime.utcnow().isoformat())
+        )
+        user_id = cur.lastrowid
+        first_name = data.get("first_name") or ""
+        last_name = data.get("last_name") or ""
+        phone = data.get("phone") or ""
+
+        cur.execute(
+            "INSERT INTO couriers (user_id, first_name, last_name, email, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, first_name, last_name, email, phone, datetime.utcnow().isoformat())
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as e:
+        conn.close()
+        return jsonify({"message": "IntegrityError", "error": str(e)}), 400
+
+    conn.close()
+    return jsonify({"message": "Kurye başarıyla oluşturuldu", "username": username}), 201
 
 # ---------------- User (admin) management ----------------
 @app.route("/users", methods=["GET"])
@@ -401,92 +455,69 @@ def webhook_yemeksepeti():
     )
     conn.commit()
     conn.close()
-    return jsonify({"message": "Order received"}), 201
+    return jsonify({"message": "Sipariş alındı"}), 201
 
 @app.route("/orders", methods=["GET"])
 @token_required
-def admin_list_orders():
+def list_orders():
     if request.user_role != "admin":
         return jsonify({"message": "Yetkisiz"}), 403
+    status_filter = request.args.get("status")
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM orders ORDER BY created_at DESC")
+    if status_filter:
+        cur.execute("SELECT * FROM orders WHERE status = ?", (status_filter,))
+    else:
+        cur.execute("SELECT * FROM orders")
     rows = cur.fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
-@app.route("/orders/<order_uuid>", methods=["PATCH"])
+@app.route("/orders/<int:order_id>", methods=["PATCH"])
 @token_required
-def admin_update_order(order_uuid):
+def update_order(order_id):
     if request.user_role != "admin":
         return jsonify({"message": "Yetkisiz"}), 403
     data = request.get_json() or {}
+    allowed = ("status", "courier_id", "customer_name", "items", "total_amount", "address")
     fields = []
     values = []
-    allowed = ("status", "courier_id")
     for k in allowed:
         if k in data:
             fields.append(f"{k} = ?")
             values.append(data[k])
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
-    values.append(order_uuid)
+    values.append(order_id)
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute(f"UPDATE orders SET {', '.join(fields)} WHERE order_uuid = ?", values)
-    conn.commit()
+    try:
+        cur.execute(f"UPDATE orders SET {', '.join(fields)} WHERE id = ?", values)
+        conn.commit()
+    except sqlite3.IntegrityError as e:
+        conn.close()
+        return jsonify({"message": "Integrity error", "error": str(e)}), 400
     conn.close()
-    return jsonify({"message": "Order güncellendi"})
+    return jsonify({"message": "Sipariş güncellendi"})
 
-# ---------------- Admin Reports ----------------
-@app.route("/admin/reports/orders", methods=["GET"])
+@app.route("/orders/<int:order_id>", methods=["DELETE"])
 @token_required
-def order_report():
+def delete_order(order_id):
     if request.user_role != "admin":
         return jsonify({"message": "Yetkisiz"}), 403
-    start_date = request.args.get("start_date")
-    end_date = request.args.get("end_date")
-    if not start_date or not end_date:
-        return jsonify({"message": "start_date ve end_date gerekli (YYYY-MM-DD)"}), 400
-    try:
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
-    except Exception:
-        return jsonify({"message": "Tarih formatı YYYY-MM-DD olmalı"}), 400
-
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT status, COUNT(*) as cnt
-        FROM orders
-        WHERE created_at >= ? AND created_at < ?
-        GROUP BY status
-    """, (start_dt.isoformat(), end_dt.isoformat()))
-    status_counts = {row[0]: row[1] for row in cur.fetchall()}
-
-    cur.execute("""
-        SELECT courier_id, COUNT(*) as delivered_count
-        FROM orders
-        WHERE created_at >= ? AND created_at < ? AND status = 'teslim edildi'
-        GROUP BY courier_id
-    """, (start_dt.isoformat(), end_dt.isoformat()))
-    cp = []
-    for courier_id, cnt in cur.fetchall():
-        if courier_id is None:
-            name = "Unassigned"
-        else:
-            r = conn.execute("SELECT first_name, last_name FROM couriers WHERE id = ?", (courier_id,)).fetchone()
-            name = f"{r['first_name']} {r['last_name']}" if r else "Bilinmeyen Kurye"
-        cp.append({"courier_id": courier_id, "courier_name": name, "delivered_orders": cnt})
+    cur.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+    conn.commit()
     conn.close()
+    return jsonify({"message": "Sipariş silindi"})
 
-    return jsonify({"order_status_counts": status_counts, "courier_performance": cp, "period": {"start": start_date, "end": end_date}})
-
-# ---------------- Health ----------------
+# ---------------- Ana Sayfa ----------------
 @app.route("/")
-def health():
-    return jsonify({"status": "ok"})
+def index():
+    return jsonify({"message": "Order API çalışıyor"})
+
 
 if __name__ == "__main__":
     init_db()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(debug=True, host="0.0.0.0", port=5000)
