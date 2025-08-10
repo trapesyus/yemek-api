@@ -1,4 +1,3 @@
-# app.py
 from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
 import sqlite3
@@ -14,7 +13,7 @@ TOKEN_EXP_HOURS = 8
 
 # ---------------- DB ----------------
 def get_db_connection():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=10)  # 10 saniye timeout ile
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -69,7 +68,6 @@ def hash_password(password: str) -> bytes:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
 
 def normalize_hash_for_check(hashed):
-    # sqlite may return memoryview, bytes, or str
     if isinstance(hashed, memoryview):
         return bytes(hashed)
     if isinstance(hashed, str):
@@ -92,7 +90,6 @@ def generate_token(user_id: int, role: str) -> str:
         "exp": datetime.utcnow() + timedelta(hours=TOKEN_EXP_HOURS)
     }
     token = jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
-    # PyJWT >=2 returns str, older returns bytes
     if isinstance(token, bytes):
         token = token.decode("utf-8")
     return token
@@ -123,10 +120,6 @@ def token_required(f):
 # ---------------- Auth / Register / Login ----------------
 @app.route("/auth/register", methods=["POST"])
 def register_user():
-    """
-    Body: { username, password, role } where role in ["admin","courier"]
-    If role == "courier" also create entry in couriers table (optional fields allowed)
-    """
     data = request.get_json() or {}
     username = data.get("username")
     password = data.get("password")
@@ -146,7 +139,6 @@ def register_user():
             (username, hashed, role, datetime.utcnow().isoformat())
         )
         user_id = cur.lastrowid
-        # if courier role, create couriers row (email/phone optional)
         if role == "courier":
             first_name = data.get("first_name") or ""
             last_name = data.get("last_name") or ""
@@ -165,10 +157,6 @@ def register_user():
 
 @app.route("/auth/login", methods=["POST"])
 def login_user():
-    """
-    Body: { username, password }
-    Returns: { token }
-    """
     data = request.get_json() or {}
     username = data.get("username")
     password = data.get("password")
@@ -193,10 +181,9 @@ def login_user():
 @app.route("/users", methods=["GET"])
 @token_required
 def list_users():
-    # admin-only
     if request.user_role != "admin":
         return jsonify({"message": "Yetkisiz"}), 403
-    role_filter = request.args.get("role")  # optional filter
+    role_filter = request.args.get("role")
     conn = get_db_connection()
     cur = conn.cursor()
     if role_filter:
@@ -211,7 +198,6 @@ def list_users():
 @app.route("/users/<int:user_id>", methods=["PATCH"])
 @token_required
 def update_user(user_id):
-    # admin-only
     if request.user_role != "admin":
         return jsonify({"message": "Yetkisiz"}), 403
     data = request.get_json() or {}
@@ -220,162 +206,184 @@ def update_user(user_id):
     if "role" in data:
         if data["role"] not in ("admin", "courier"):
             return jsonify({"message": "role yalnızca admin veya courier olabilir"}), 400
-        fields.append("role = ?"); values.append(data["role"])
+        fields.append("role = ?")
+        values.append(data["role"])
     if "password" in data:
-        fields.append("password_hash = ?"); values.append(hash_password(data["password"]))
+        fields.append("password_hash = ?")
+        values.append(hash_password(data["password"]))
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
     values.append(user_id)
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", values)
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"message": "Kullanıcı güncellendi"})
 
 @app.route("/users/<int:user_id>", methods=["DELETE"])
 @token_required
 def delete_user(user_id):
-    # admin-only
     if request.user_role != "admin":
         return jsonify({"message": "Yetkisiz"}), 403
-    conn = get_db_connection(); cur = conn.cursor()
-    # also delete linked courier row if exists
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("DELETE FROM couriers WHERE user_id = ?", (user_id,))
     cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"message": "Kullanıcı ve bağlı kurye (varsa) silindi"})
 
 # ---------------- Couriers CRUD & listing ----------------
 @app.route("/couriers", methods=["GET"])
 @token_required
 def list_couriers():
-    # admin-only
     if request.user_role != "admin":
         return jsonify({"message": "Yetkisiz"}), 403
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT id, user_id, first_name, last_name, email, phone, status, created_at FROM couriers")
-    rows = cur.fetchall(); conn.close()
+    rows = cur.fetchall()
+    conn.close()
     return jsonify([dict(r) for r in rows])
 
 @app.route("/couriers/<int:courier_id>", methods=["PATCH"])
 @token_required
 def update_courier(courier_id):
-    # admin-only
     if request.user_role != "admin":
         return jsonify({"message": "Yetkisiz"}), 403
     data = request.get_json() or {}
     allowed = ("first_name", "last_name", "email", "phone", "status")
-    fields = []; values = []
+    fields = []
+    values = []
     for k in allowed:
         if k in data:
-            fields.append(f"{k} = ?"); values.append(data[k])
+            fields.append(f"{k} = ?")
+            values.append(data[k])
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
     values.append(courier_id)
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     try:
         cur.execute(f"UPDATE couriers SET {', '.join(fields)} WHERE id = ?", values)
         conn.commit()
     except sqlite3.IntegrityError as e:
-        conn.close(); return jsonify({"message": "Integrity error", "error": str(e)}), 400
+        conn.close()
+        return jsonify({"message": "Integrity error", "error": str(e)}), 400
     conn.close()
     return jsonify({"message": "Kurye güncellendi"})
 
 @app.route("/couriers/<int:courier_id>", methods=["DELETE"])
 @token_required
 def remove_courier(courier_id):
-    # admin-only
     if request.user_role != "admin":
         return jsonify({"message": "Yetkisiz"}), 403
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("DELETE FROM couriers WHERE id = ?", (courier_id,))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"message": f"Kurye {courier_id} silindi"})
 
 # ---------------- Courier actions ----------------
 @app.route("/couriers/<int:courier_id>/status", methods=["PATCH"])
 @token_required
 def courier_update_status(courier_id):
-    # courier can update their own status OR admin can update any
     if request.user_role != "admin" and request.user_id is not None:
-        # need to ensure courier_id corresponds to user's courier row when not admin
-        conn = get_db_connection(); cur = conn.cursor()
+        conn = get_db_connection()
+        cur = conn.cursor()
         cur.execute("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
-        row = cur.fetchone(); conn.close()
+        row = cur.fetchone()
+        conn.close()
         if not row or row["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
     data = request.get_json() or {}
     status = data.get("status")
     if status not in ("boşta", "molada", "teslimatta"):
         return jsonify({"message": "Geçersiz status"}), 400
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("UPDATE couriers SET status = ? WHERE id = ?", (status, courier_id))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"message": "Kurye durumu güncellendi", "status": status})
 
 @app.route("/couriers/<int:courier_id>/orders", methods=["GET"])
 @token_required
 def courier_assigned_orders(courier_id):
-    # courier can view own orders OR admin
     if request.user_role != "admin":
-        conn = get_db_connection(); cur = conn.cursor()
+        conn = get_db_connection()
+        cur = conn.cursor()
         cur.execute("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
-        row = cur.fetchone(); conn.close()
+        row = cur.fetchone()
+        conn.close()
         if not row or row["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT * FROM orders WHERE courier_id = ? AND status IN ('yeni','teslim alındı')", (courier_id,))
-    rows = cur.fetchall(); conn.close()
+    rows = cur.fetchall()
+    conn.close()
     return jsonify([dict(r) for r in rows])
 
 @app.route("/couriers/<int:courier_id>/orders/<int:order_id>/pickup", methods=["POST"])
 @token_required
 def courier_pickup(courier_id, order_id):
-    # courier or admin
     if request.user_role != "admin":
-        conn = get_db_connection(); cur = conn.cursor()
+        conn = get_db_connection()
+        cur = conn.cursor()
         cur.execute("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
-        row = cur.fetchone(); conn.close()
+        row = cur.fetchone()
+        conn.close()
         if not row or row["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT * FROM orders WHERE id = ? AND courier_id = ?", (order_id, courier_id))
     order = cur.fetchone()
     if not order:
         conn.close()
         return jsonify({"message": "Sipariş bulunamadı veya bu kurye için atanmadı"}), 404
     if order["status"] != "yeni":
-        conn.close(); return jsonify({"message": "Sipariş zaten teslim alınmış veya teslim edilmiş"}), 400
+        conn.close()
+        return jsonify({"message": "Sipariş zaten teslim alınmış veya teslim edilmiş"}), 400
     cur.execute("UPDATE orders SET status = 'teslim alındı' WHERE id = ?", (order_id,))
     cur.execute("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"message": "Sipariş teslim alındı"})
 
 @app.route("/couriers/<int:courier_id>/orders/<int:order_id>/deliver", methods=["POST"])
 @token_required
 def courier_deliver(courier_id, order_id):
-    # courier or admin
     if request.user_role != "admin":
-        conn = get_db_connection(); cur = conn.cursor()
+        conn = get_db_connection()
+        cur = conn.cursor()
         cur.execute("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
-        row = cur.fetchone(); conn.close()
+        row = cur.fetchone()
+        conn.close()
         if not row or row["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT * FROM orders WHERE id = ? AND courier_id = ?", (order_id, courier_id))
     order = cur.fetchone()
     if not order:
-        conn.close(); return jsonify({"message": "Sipariş bulunamadı veya bu kurye için atanmadı"}), 404
+        conn.close()
+        return jsonify({"message": "Sipariş bulunamadı veya bu kurye için atanmadı"}), 404
     if order["status"] != "teslim alındı":
-        conn.close(); return jsonify({"message": "Sipariş teslim alınmamış"}), 400
+        conn.close()
+        return jsonify({"message": "Sipariş teslim alınmamış"}), 400
     cur.execute("UPDATE orders SET status = 'teslim edildi' WHERE id = ?", (order_id,))
     cur.execute("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"message": "Sipariş teslim edildi"})
 
 # ---------------- Orders (webhook + admin) ----------------
 @app.route("/webhooks/yemeksepeti", methods=["POST"])
 def webhook_yemeksepeti():
-    # Public endpoint intended for Yemeksepeti webhook (no auth)
     data = request.get_json() or {}
     external_id = data.get("external_id") or data.get("order_id") or data.get("id")
     customer_name = data.get("customer_name") or data.get("customer")
@@ -385,11 +393,14 @@ def webhook_yemeksepeti():
     payload = str(data)
     created = datetime.utcnow().isoformat()
 
-    conn = get_db_connection(); cur = conn.cursor()
-    # allow duplicate external_id check
-    cur.execute("INSERT INTO orders (order_uuid, external_id, customer_name, items, total_amount, address, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (f"o-{int(datetime.utcnow().timestamp()*1000)}", external_id, customer_name, str(items), total, address, payload, created))
-    conn.commit(); conn.close()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO orders (order_uuid, external_id, customer_name, items, total_amount, address, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (f"o-{int(datetime.utcnow().timestamp()*1000)}", external_id, customer_name, str(items), total, address, payload, created)
+    )
+    conn.commit()
+    conn.close()
     return jsonify({"message": "Order received"}), 201
 
 @app.route("/orders", methods=["GET"])
@@ -397,9 +408,11 @@ def webhook_yemeksepeti():
 def admin_list_orders():
     if request.user_role != "admin":
         return jsonify({"message": "Yetkisiz"}), 403
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT * FROM orders ORDER BY created_at DESC")
-    rows = cur.fetchall(); conn.close()
+    rows = cur.fetchall()
+    conn.close()
     return jsonify([dict(r) for r in rows])
 
 @app.route("/orders/<order_uuid>", methods=["PATCH"])
@@ -408,17 +421,21 @@ def admin_update_order(order_uuid):
     if request.user_role != "admin":
         return jsonify({"message": "Yetkisiz"}), 403
     data = request.get_json() or {}
-    fields = []; values = []
+    fields = []
+    values = []
     allowed = ("status", "courier_id")
     for k in allowed:
         if k in data:
-            fields.append(f"{k} = ?"); values.append(data[k])
+            fields.append(f"{k} = ?")
+            values.append(data[k])
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
     values.append(order_uuid)
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute(f"UPDATE orders SET {', '.join(fields)} WHERE order_uuid = ?", values)
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     return jsonify({"message": "Order güncellendi"})
 
 # ---------------- Admin Reports ----------------
@@ -437,7 +454,8 @@ def order_report():
     except Exception:
         return jsonify({"message": "Tarih formatı YYYY-MM-DD olmalı"}), 400
 
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("""
         SELECT status, COUNT(*) as cnt
         FROM orders
