@@ -12,11 +12,16 @@ SECRET_KEY = "çok_gizli_bir_anahtar"  # PROD: environment variable ile sakla
 JWT_ALGORITHM = "HS256"
 TOKEN_EXP_HOURS = 8
 
-# ---------- Helper: DB connection ----------
+# ---------------- DB ----------------
 def get_conn():
     conn = sqlite3.connect(DB_NAME, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
+
+def row_to_dict(row):
+    if not row:
+        return None
+    return {k: row[k] for k in row.keys()}
 
 def init_db():
     conn = get_conn()
@@ -64,7 +69,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ---------- Password & JWT ----------
+# ---------------- Password & JWT ----------------
 def hash_password(password: str) -> bytes:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
 
@@ -87,13 +92,13 @@ def generate_token(user_id: int, role: str) -> str:
     payload = {"user_id": user_id, "role": role, "exp": datetime.utcnow() + timedelta(hours=TOKEN_EXP_HOURS)}
     token = jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
     if isinstance(token, bytes):
-        return token.decode("utf-8")
+        token = token.decode("utf-8")
     return token
 
 def decode_token(token: str):
     return jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
 
-# ---------- Auth decorators ----------
+# ---------------- Auth decorators ----------------
 def token_required(f):
     @wraps(f)
     def wrapped(*args, **kwargs):
@@ -123,15 +128,14 @@ def admin_required(f):
         return f(*args, **kwargs)
     return wrapped
 
-# ---------- Auth: register/login ----------
+# ---------------- Auth: register/login ----------------
 @app.route("/auth/register", methods=["POST"])
 def auth_register():
     """
-    Kurye kendi kendine kaydolabilir (role=courier).
-    role=admin ise:
-      - Eğer henüz admin yoksa bootstrap (ilk admin) oluşturulur.
-      - Eğer admin mevcutsa, sadece admin token ile yeni admin oluşturulabilir.
-    Body: { username, password, role, first_name, last_name, email, phone }
+    Body: { username, password, role (admin|courier), first_name, last_name, email, phone }
+    - courier: anyone can self-register
+    - admin: if no admin exists, allowed; if admin exists, only existing admin (via Bearer token) can create new admin
+    Returns created user summary (not including password hash)
     """
     data = request.get_json() or {}
     username = data.get("username")
@@ -145,12 +149,12 @@ def auth_register():
 
     conn = get_conn()
     cur = conn.cursor()
-    # Eğer role admin isteniyorsa güvenlik: ilk admin yoksa izin ver, yoksa admin token şartı koy
+
+    # If admin asked and admin exists, require admin token
     if role == "admin":
         cur.execute("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1")
         has_admin = cur.fetchone() is not None
         if has_admin:
-            # require admin token
             auth = request.headers.get("Authorization", "")
             if not auth.startswith("Bearer "):
                 conn.close()
@@ -170,7 +174,8 @@ def auth_register():
         cur.execute("INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
                     (username, hashed, role, datetime.utcnow().isoformat()))
         user_id = cur.lastrowid
-        # if courier, create courier record as well
+
+        courier_obj = None
         if role == "courier":
             first_name = data.get("first_name") or ""
             last_name = data.get("last_name") or ""
@@ -179,33 +184,70 @@ def auth_register():
             cur.execute("""INSERT INTO couriers (user_id, first_name, last_name, email, phone, created_at)
                            VALUES (?, ?, ?, ?, ?, ?)""",
                         (user_id, first_name, last_name, email, phone, datetime.utcnow().isoformat()))
-        conn.commit()
+            conn.commit()
+            cur.execute("SELECT * FROM couriers WHERE user_id = ?", (user_id,))
+            courier_row = cur.fetchone()
+            courier_obj = row_to_dict(courier_row)
+        else:
+            conn.commit()
+
     except sqlite3.IntegrityError as e:
         conn.close()
         return jsonify({"message": "Kullanıcı adı veya e-posta zaten var", "error": str(e)}), 400
+
+    # prepare response object (no password hash)
+    user_resp = {"id": user_id, "username": username, "role": role, "created_at": datetime.utcnow().isoformat()}
+    if role == "courier":
+        user_resp["courier"] = courier_obj
+
     conn.close()
-    return jsonify({"message": f"{role} oluşturuldu", "username": username}), 201
+    return jsonify({"message": f"{role} oluşturuldu", "user": user_resp}), 201
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login():
+    """
+    Body: { username, password }
+    Returns: { token, user: { id, username, role, created_at, courier: { ... } (optional) } }
+    """
     data = request.get_json() or {}
     username = data.get("username")
     password = data.get("password")
     if not username or not password:
         return jsonify({"message": "username ve password gerekli"}), 400
+
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT * FROM users WHERE username = ?", (username,))
-    user = cur.fetchone()
-    conn.close()
-    if not user:
+    user_row = cur.fetchone()
+    if not user_row:
+        conn.close()
         return jsonify({"message": "Kullanıcı bulunamadı"}), 404
-    if not check_password(password, user["password_hash"]):
-        return jsonify({"message": "Parola yanlış"}), 401
-    token = generate_token(user["id"], user["role"])
-    return jsonify({"token": token, "role": user["role"]})
 
-# ---------- Admin creates courier (explicit) ----------
+    if not check_password(password, user_row["password_hash"]):
+        conn.close()
+        return jsonify({"message": "Parola yanlış"}), 401
+
+    user_id = user_row["id"]
+    role = user_row["role"]
+    token = generate_token(user_id, role)
+
+    user_out = {
+        "id": user_id,
+        "username": user_row["username"],
+        "role": role,
+        "created_at": user_row["created_at"]
+    }
+
+    # attach courier profile if applicable
+    if role == "courier":
+        cur.execute("SELECT id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?", (user_id,))
+        courier_row = cur.fetchone()
+        user_out["courier"] = row_to_dict(courier_row) if courier_row else None
+
+    conn.close()
+    return jsonify({"token": token, "user": user_out})
+
+# ---------------- Admin creates courier (explicit) ----------------
 @app.route("/admin/couriers", methods=["POST"])
 @admin_required
 def admin_create_courier():
@@ -239,13 +281,17 @@ def admin_create_courier():
                        VALUES (?, ?, ?, ?, ?, ?)""",
                     (user_id, first_name, last_name, email, phone, datetime.utcnow().isoformat()))
         conn.commit()
+        # return created object
+        cur.execute("SELECT id, user_id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?", (user_id,))
+        courier_row = cur.fetchone()
+        courier_obj = row_to_dict(courier_row)
     except sqlite3.IntegrityError as e:
         conn.close()
         return jsonify({"message": "IntegrityError", "error": str(e)}), 400
     conn.close()
-    return jsonify({"message": "Kurye oluşturuldu", "username": username}), 201
+    return jsonify({"message": "Kurye oluşturuldu", "user": {"id": user_id, "username": username, "role": "courier"}, "courier": courier_obj}), 201
 
-# ---------- Current user info ----------
+# ---------------- Current user info ----------------
 @app.route("/me", methods=["GET"])
 @token_required
 def me():
@@ -253,16 +299,18 @@ def me():
     conn = get_conn(); cur = conn.cursor()
     cur.execute("SELECT id, username, role, created_at FROM users WHERE id = ?", (uid,))
     u = cur.fetchone()
-    user = dict(u) if u else None
-    # if courier, attach courier details
-    if user and user["role"] == "courier":
-        cur.execute("SELECT id, first_name, last_name, email, phone, status FROM couriers WHERE user_id = ?", (uid,))
+    if not u:
+        conn.close()
+        return jsonify({"message": "Kullanıcı bulunamadı"}), 404
+    user = row_to_dict(u)
+    if user["role"] == "courier":
+        cur.execute("SELECT id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?", (uid,))
         c = cur.fetchone()
-        user["courier"] = dict(c) if c else None
+        user["courier"] = row_to_dict(c) if c else None
     conn.close()
     return jsonify(user)
 
-# ---------- Users management (admin) ----------
+# ---------------- Users management (admin) ----------------
 @app.route("/users", methods=["GET"])
 @admin_required
 def list_users():
@@ -270,7 +318,7 @@ def list_users():
     cur.execute("SELECT id, username, role, created_at FROM users")
     rows = cur.fetchall()
     conn.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify([row_to_dict(r) for r in rows])
 
 @app.route("/users/<int:user_id>", methods=["PATCH"])
 @admin_required
@@ -296,20 +344,20 @@ def update_user(user_id):
 @admin_required
 def delete_user(user_id):
     conn = get_conn(); cur = conn.cursor()
-    # delete courier row if exists
+    # delete courier row if exists, then user
     cur.execute("DELETE FROM couriers WHERE user_id = ?", (user_id,))
     cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit(); conn.close()
     return jsonify({"message": "Kullanıcı silindi (ve bağlı kurye kaydı kaldırıldı)"})
 
-# ---------- Couriers listing & CRUD ----------
+# ---------------- Couriers listing & CRUD ----------------
 @app.route("/couriers", methods=["GET"])
 @admin_required
 def admin_list_couriers():
     conn = get_conn(); cur = conn.cursor()
     cur.execute("SELECT id, user_id, first_name, last_name, email, phone, status, created_at FROM couriers")
     rows = cur.fetchall(); conn.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify([row_to_dict(r) for r in rows])
 
 @app.route("/couriers/<int:courier_id>", methods=["PATCH"])
 @admin_required
@@ -340,13 +388,12 @@ def admin_delete_courier(courier_id):
     conn.commit(); conn.close()
     return jsonify({"message": f"Kurye {courier_id} silindi"})
 
-# ---------- Courier actions (self) ----------
+# ---------------- Courier actions (self) ----------------
 @app.route("/couriers/<int:courier_id>/status", methods=["PATCH"])
 @token_required
 def courier_update_status(courier_id):
     # courier can update own status; admin can update any
     if request.user_role != "admin":
-        # ensure courier.user_id == request.user_id
         conn = get_conn(); cur = conn.cursor()
         cur.execute("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
         row = cur.fetchone(); conn.close()
@@ -374,7 +421,7 @@ def courier_get_orders(courier_id):
     conn = get_conn(); cur = conn.cursor()
     cur.execute("SELECT * FROM orders WHERE courier_id = ? AND status IN ('yeni','teslim alındı')", (courier_id,))
     rows = cur.fetchall(); conn.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify([row_to_dict(r) for r in rows])
 
 @app.route("/couriers/<int:courier_id>/orders/<int:order_id>/pickup", methods=["POST"])
 @token_required
@@ -418,13 +465,9 @@ def courier_deliver_order(courier_id, order_id):
     conn.commit(); conn.close()
     return jsonify({"message": "Sipariş teslim edildi"})
 
-# ---------- Orders (webhook + admin) ----------
+# ---------------- Orders (webhook + admin) ----------------
 @app.route("/webhooks/yemeksepeti", methods=["POST"])
 def webhook_yemeksepeti():
-    """
-    Public webhook for Yemeksepeti or tests.
-    Accepts many shapes; stores payload and minimal fields.
-    """
     data = request.get_json() or {}
     external_id = data.get("external_id") or data.get("order_id") or data.get("id")
     vendor_id = data.get("vendor_id")
@@ -459,7 +502,7 @@ def admin_list_orders():
     else:
         cur.execute("SELECT * FROM orders ORDER BY created_at DESC")
     rows = cur.fetchall(); conn.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify([row_to_dict(r) for r in rows])
 
 @app.route("/orders/<int:order_id>", methods=["PATCH"])
 @admin_required
@@ -486,7 +529,7 @@ def admin_delete_order(order_id):
     conn.commit(); conn.close()
     return jsonify({"message": "Sipariş silindi"})
 
-# ---------- Admin reports ----------
+# ---------------- Admin reports ----------------
 @app.route("/admin/reports/orders", methods=["GET"])
 @admin_required
 def admin_reports_orders():
@@ -516,14 +559,13 @@ def admin_reports_orders():
         if not courier_id:
             name = "Unassigned"
         else:
-            # fetch courier name
             r = conn.execute("SELECT first_name, last_name FROM couriers WHERE id = ?", (courier_id,)).fetchone()
             name = f"{r['first_name']} {r['last_name']}" if r else "Bilinmeyen Kurye"
         perf.append({"courier_id": courier_id, "courier_name": name, "delivered_orders": cnt})
     conn.close()
     return jsonify({"status_counts": status_counts, "courier_performance": perf, "period": {"start": start, "end": end}})
 
-# ---------- Health ----------
+# ---------------- Health ----------------
 @app.route("/")
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
