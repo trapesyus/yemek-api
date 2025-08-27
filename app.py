@@ -27,6 +27,7 @@ def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
+    # Users table
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,6 +38,7 @@ def init_db():
     )
     """)
 
+    # Couriers table
     cur.execute("""
     CREATE TABLE IF NOT EXISTS couriers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,6 +52,7 @@ def init_db():
     )
     """)
 
+    # Orders table
     cur.execute("""
     CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,9 +66,37 @@ def init_db():
         status TEXT DEFAULT 'yeni',
         courier_id INTEGER,
         payload TEXT,
+        delivery_failed_reason TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    # Restaurants table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS restaurants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        fee_per_package REAL DEFAULT 5.0,
+        address TEXT,
+        phone TEXT,
+        is_active INTEGER DEFAULT 1,
         created_at TEXT
     )
     """)
+
+    # Delivery history table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS delivery_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER,
+        courier_id INTEGER,
+        status TEXT,
+        notes TEXT,
+        created_at TEXT
+    )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -125,6 +156,15 @@ def admin_required(f):
     def wrapped(*args, **kwargs):
         if getattr(request, "user_role", None) != "admin":
             return jsonify({"message": "Admin yetkisi gerekli"}), 403
+        return f(*args, **kwargs)
+    return wrapped
+
+def courier_required(f):
+    @wraps(f)
+    @token_required
+    def wrapped(*args, **kwargs):
+        if getattr(request, "user_role", None) != "courier":
+            return jsonify({"message": "Kurye yetkisi gerekli"}), 403
         return f(*args, **kwargs)
     return wrapped
 
@@ -439,8 +479,14 @@ def courier_pickup_order(courier_id, order_id):
         conn.close(); return jsonify({"message": "Sipariş bulunamadı veya atanmadı"}), 404
     if order["status"] != "yeni":
         conn.close(); return jsonify({"message": "Sipariş zaten alınmış veya teslim edilmiş"}), 400
-    cur.execute("UPDATE orders SET status = 'teslim alındı' WHERE id = ?", (order_id,))
+    now = datetime.utcnow().isoformat()
+    cur.execute("UPDATE orders SET status = 'teslim alındı', updated_at = ? WHERE id = ?", (now, order_id))
     cur.execute("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
+    
+    # Add to delivery history
+    cur.execute("INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+                (order_id, courier_id, 'teslim alındı', 'Kurye siparişi teslim aldı', now))
+    
     conn.commit(); conn.close()
     return jsonify({"message": "Sipariş teslim alındı"})
 
@@ -460,10 +506,71 @@ def courier_deliver_order(courier_id, order_id):
         conn.close(); return jsonify({"message": "Sipariş bulunamadı veya atanmadı"}), 404
     if order["status"] != "teslim alındı":
         conn.close(); return jsonify({"message": "Sipariş teslim alınmamış"}), 400
-    cur.execute("UPDATE orders SET status = 'teslim edildi' WHERE id = ?", (order_id,))
+    now = datetime.utcnow().isoformat()
+    cur.execute("UPDATE orders SET status = 'teslim edildi', updated_at = ? WHERE id = ?", (now, order_id))
     cur.execute("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
+    
+    # Add to delivery history
+    cur.execute("INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+                (order_id, courier_id, 'teslim edildi', 'Sipariş başarıyla teslim edildi', now))
+    
     conn.commit(); conn.close()
     return jsonify({"message": "Sipariş teslim edildi"})
+
+@app.route("/couriers/<int:courier_id>/orders/<int:order_id>/fail", methods=["POST"])
+@token_required
+def courier_fail_order(courier_id, order_id):
+    if request.user_role != "admin":
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
+        row = cur.fetchone(); conn.close()
+        if not row or row["user_id"] != request.user_id:
+            return jsonify({"message": "Yetkisiz"}), 403
+    
+    data = request.get_json() or {}
+    reason = data.get("reason", "")
+    if not reason:
+        return jsonify({"message": "Teslimat başarısızlığı nedeni gereklidir"}), 400
+    
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("SELECT * FROM orders WHERE id = ? AND courier_id = ?", (order_id, courier_id))
+    order = cur.fetchone()
+    if not order:
+        conn.close(); return jsonify({"message": "Sipariş bulunamadı veya atanmadı"}), 404
+    
+    now = datetime.utcnow().isoformat()
+    cur.execute("UPDATE orders SET status = 'teslim edilemedi', delivery_failed_reason = ?, updated_at = ? WHERE id = ?", 
+                (reason, now, order_id))
+    cur.execute("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
+    
+    # Add to delivery history
+    cur.execute("INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+                (order_id, courier_id, 'teslim edilemedi', f'Teslimat başarısız: {reason}', now))
+    
+    conn.commit(); conn.close()
+    return jsonify({"message": "Teslimat başarısız olarak işaretlendi"})
+
+@app.route("/couriers/<int:courier_id>/delivery-history", methods=["GET"])
+@token_required
+def courier_delivery_history(courier_id):
+    # courier can view own delivery history
+    if request.user_role != "admin":
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
+        row = cur.fetchone(); conn.close()
+        if not row or row["user_id"] != request.user_id:
+            return jsonify({"message": "Yetkisiz"}), 403
+    
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("""
+        SELECT dh.*, o.customer_name, o.address, o.total_amount 
+        FROM delivery_history dh 
+        JOIN orders o ON dh.order_id = o.id 
+        WHERE dh.courier_id = ? 
+        ORDER BY dh.created_at DESC
+    """, (courier_id,))
+    rows = cur.fetchall(); conn.close()
+    return jsonify([row_to_dict(r) for r in rows])
 
 # ---------------- Orders (webhook + admin) ----------------
 @app.route("/webhooks/yemeksepeti", methods=["POST"])
@@ -482,9 +589,9 @@ def webhook_yemeksepeti():
     conn = get_conn(); cur = conn.cursor()
     try:
         cur.execute("""INSERT INTO orders
-                       (order_uuid, external_id, vendor_id, customer_name, items, total_amount, address, payload, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (order_uuid, external_id, vendor_id, customer_name, str(items), total, address, payload, created))
+                       (order_uuid, external_id, vendor_id, customer_name, items, total_amount, address, payload, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (order_uuid, external_id, vendor_id, customer_name, str(items), total, address, payload, created, created))
         conn.commit()
     except sqlite3.IntegrityError:
         conn.close()
@@ -515,6 +622,11 @@ def admin_patch_order(order_id):
             fields.append(f"{k} = ?"); values.append(data[k])
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
+    
+    # Add updated_at timestamp
+    fields.append("updated_at = ?")
+    values.append(datetime.utcnow().isoformat())
+    
     values.append(order_id)
     conn = get_conn(); cur = conn.cursor()
     cur.execute(f"UPDATE orders SET {', '.join(fields)} WHERE id = ?", values)
@@ -528,6 +640,73 @@ def admin_delete_order(order_id):
     cur.execute("DELETE FROM orders WHERE id = ?", (order_id,))
     conn.commit(); conn.close()
     return jsonify({"message": "Sipariş silindi"})
+
+# ---------------- Restaurant Management (admin) ----------------
+@app.route("/restaurants", methods=["GET"])
+@admin_required
+def list_restaurants():
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("SELECT * FROM restaurants ORDER BY name")
+    rows = cur.fetchall(); conn.close()
+    return jsonify([row_to_dict(r) for r in rows])
+
+@app.route("/restaurants", methods=["POST"])
+@admin_required
+def create_restaurant():
+    data = request.get_json() or {}
+    name = data.get("name")
+    fee_per_package = data.get("fee_per_package", 5.0)
+    address = data.get("address", "")
+    phone = data.get("phone", "")
+    
+    if not name:
+        return jsonify({"message": "Restoran adı gereklidir"}), 400
+    
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute("""INSERT INTO restaurants 
+                      (name, fee_per_package, address, phone, created_at) 
+                      VALUES (?, ?, ?, ?, ?)""",
+                    (name, fee_per_package, address, phone, datetime.utcnow().isoformat()))
+        conn.commit()
+        restaurant_id = cur.lastrowid
+        cur.execute("SELECT * FROM restaurants WHERE id = ?", (restaurant_id,))
+        restaurant = row_to_dict(cur.fetchone())
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"message": "Bu isimde bir restoran zaten var"}), 400
+    
+    conn.close()
+    return jsonify({"message": "Restoran oluşturuldu", "restaurant": restaurant}), 201
+
+@app.route("/restaurants/<int:restaurant_id>", methods=["PATCH"])
+@admin_required
+def update_restaurant(restaurant_id):
+    data = request.get_json() or {}
+    allowed = ("name", "fee_per_package", "address", "phone", "is_active")
+    fields = []; values = []
+    for k in allowed:
+        if k in data:
+            fields.append(f"{k} = ?"); values.append(data[k])
+    if not fields:
+        return jsonify({"message": "Güncellenecek alan yok"}), 400
+    values.append(restaurant_id)
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute(f"UPDATE restaurants SET {', '.join(fields)} WHERE id = ?", values)
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close(); return jsonify({"message": "Bu isimde bir restoran zaten var"}), 400
+    conn.close()
+    return jsonify({"message": "Restoran güncellendi"})
+
+@app.route("/restaurants/<int:restaurant_id>", methods=["DELETE"])
+@admin_required
+def delete_restaurant(restaurant_id):
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("DELETE FROM restaurants WHERE id = ?", (restaurant_id,))
+    conn.commit(); conn.close()
+    return jsonify({"message": "Restoran silindi"})
 
 # ---------------- Admin reports ----------------
 @app.route("/admin/reports/orders", methods=["GET"])
@@ -557,13 +736,34 @@ def admin_reports_orders():
         courier_id = row[0]
         cnt = row[1]
         if not courier_id:
-            name = "Unassigned"
+            name = "Atanmamış"
         else:
             r = conn.execute("SELECT first_name, last_name FROM couriers WHERE id = ?", (courier_id,)).fetchone()
             name = f"{r['first_name']} {r['last_name']}" if r else "Bilinmeyen Kurye"
         perf.append({"courier_id": courier_id, "courier_name": name, "delivered_orders": cnt})
+    
+    # Restaurant performance
+    cur.execute("""SELECT vendor_id, COUNT(*) as order_count FROM orders
+                   WHERE created_at >= ? AND created_at < ? GROUP BY vendor_id""",
+                (start_dt.isoformat(), end_dt.isoformat()))
+    rest_perf = []
+    for row in cur.fetchall():
+        vendor_id = row[0]
+        cnt = row[1]
+        if vendor_id:
+            r = conn.execute("SELECT name FROM restaurants WHERE id = ?", (vendor_id,)).fetchone()
+            name = r['name'] if r else "Bilinmeyen Restoran"
+        else:
+            name = "Bilinmeyen Restoran"
+        rest_perf.append({"vendor_id": vendor_id, "restaurant_name": name, "order_count": cnt})
+    
     conn.close()
-    return jsonify({"status_counts": status_counts, "courier_performance": perf, "period": {"start": start, "end": end}})
+    return jsonify({
+        "status_counts": status_counts, 
+        "courier_performance": perf, 
+        "restaurant_performance": rest_perf,
+        "period": {"start": start, "end": end}
+    })
 
 # ---------------- Health ----------------
 @app.route("/")
