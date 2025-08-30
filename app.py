@@ -393,7 +393,7 @@ def auth_register():
                 data_token = decode_token(token)
                 if data_token.get("role") != "admin":
                     conn.close()
-                    return jsonify({"message": "Yalnızca admin yeni admin oluşturabilir."), 403
+                    return jsonify({"message": "Yalnızca admin yeni admin oluşturabilir."}), 403
             except Exception:
                 conn.close()
                 return jsonify({"message": "Token geçersiz"}), 401
