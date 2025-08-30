@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import sqlite3
 import bcrypt
 import jwt
+import re
 from functools import wraps
 
 app = Flask(__name__)
@@ -68,7 +69,8 @@ def init_db():
         payload TEXT,
         delivery_failed_reason TEXT,
         created_at TEXT,
-        updated_at TEXT
+        updated_at TEXT,
+        neighborhood_id INTEGER
     )
     """)
 
@@ -94,6 +96,26 @@ def init_db():
         status TEXT,
         notes TEXT,
         created_at TEXT
+    )
+    """)
+
+    # Neighborhoods table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS neighborhoods (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        created_at TEXT
+    )
+    """)
+
+    # Courier performance table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS courier_performance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        courier_id INTEGER,
+        total_orders INTEGER DEFAULT 0,
+        last_assigned TEXT,
+        FOREIGN KEY (courier_id) REFERENCES couriers (id)
     )
     """)
 
@@ -168,6 +190,173 @@ def courier_required(f):
         return f(*args, **kwargs)
     return wrapped
 
+# ---------------- Mahalle ve Dağıtım İşlemleri ----------------
+def extract_neighborhood(address):
+    if not address:
+        return None
+        
+    address_lower = address.lower()
+    
+    # Mahalle desenleri
+    patterns = [
+        r'(\w+)\s*mah\.',
+        r'(\w+)\s*mahallesi',
+        r'(\w+)\s*mahalle',
+        r'mah\.\s*(\w+)',
+        r'mahallesi\s*(\w+)'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, address_lower)
+        if match:
+            neighborhood_name = match.group(1).strip().title()
+            return neighborhood_name
+    
+    return None
+
+def get_or_create_neighborhood(neighborhood_name):
+    if not neighborhood_name:
+        return None
+        
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    # Mahalleyi bul veya oluştur
+    cur.execute("SELECT id FROM neighborhoods WHERE name = ?", (neighborhood_name,))
+    neighborhood = cur.fetchone()
+    
+    if neighborhood:
+        neighborhood_id = neighborhood["id"]
+    else:
+        cur.execute("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)",
+                   (neighborhood_name, datetime.utcnow().isoformat()))
+        neighborhood_id = cur.lastrowid
+        conn.commit()
+    
+    conn.close()
+    return neighborhood_id
+
+def ensure_courier_performance(courier_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    cur.execute("SELECT 1 FROM courier_performance WHERE courier_id = ?", (courier_id,))
+    if not cur.fetchone():
+        cur.execute("INSERT INTO courier_performance (courier_id, last_assigned) VALUES (?, ?)",
+                   (courier_id, datetime.utcnow().isoformat()))
+        conn.commit()
+    
+    conn.close()
+
+def assign_order_to_courier(order_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    # Sipariş bilgilerini al
+    cur.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
+    order = cur.fetchone()
+    if not order:
+        conn.close()
+        return False
+    
+    # Adresten mahalle bilgisini çıkar
+    address = order["address"]
+    neighborhood_name = extract_neighborhood(address)
+    
+    if neighborhood_name:
+        # Mahalleyi kaydet veya getir
+        neighborhood_id = get_or_create_neighborhood(neighborhood_name)
+        
+        # Siparişin mahalle bilgisini güncelle
+        cur.execute("UPDATE orders SET neighborhood_id = ? WHERE id = ?", 
+                   (neighborhood_id, order_id))
+        conn.commit()
+    else:
+        neighborhood_id = None
+    
+    # Aynı mahalledeki son 5 dakika içindeki siparişleri bul
+    five_min_ago = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
+    
+    if neighborhood_id:
+        # Aynı mahalledeki son siparişleri ve kuryelerini bul
+        cur.execute("""
+        SELECT courier_id, COUNT(*) as order_count 
+        FROM orders 
+        WHERE neighborhood_id = ? 
+          AND created_at >= ? 
+          AND status IN ('yeni', 'teslim alındı')
+          AND courier_id IS NOT NULL
+        GROUP BY courier_id
+        ORDER BY order_count ASC
+        """, (neighborhood_id, five_min_ago))
+        
+        neighborhood_orders = cur.fetchall()
+        
+        # Bu mahallede aktif siparişi olan kuryeleri önceliklendir
+        for courier in neighborhood_orders:
+            courier_id = courier["courier_id"]
+            
+            # Kuryenin durumunu kontrol et
+            cur.execute("SELECT status FROM couriers WHERE id = ?", (courier_id,))
+            courier_status = cur.fetchone()
+            
+            if courier_status and courier_status["status"] in ("boşta", "teslimatta"):
+                # Bu kuryeye siparişi ata
+                cur.execute("UPDATE orders SET courier_id = ? WHERE id = ?", 
+                           (courier_id, order_id))
+                cur.execute("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", 
+                           (courier_id,))
+                
+                # Kurye performansını güncelle
+                ensure_courier_performance(courier_id)
+                cur.execute("""
+                UPDATE courier_performance 
+                SET total_orders = total_orders + 1, 
+                    last_assigned = ?
+                WHERE courier_id = ?
+                """, (datetime.utcnow().isoformat(), courier_id))
+                
+                conn.commit()
+                conn.close()
+                return True
+    
+    # Eğer aynı mahallede aktif kurye yoksa, en az siparişi olan kuryeyi bul
+    cur.execute("""
+    SELECT c.id, cp.total_orders, cp.last_assigned
+    FROM couriers c
+    LEFT JOIN courier_performance cp ON c.id = cp.courier_id
+    WHERE c.status IN ('boşta', 'teslimatta')
+    ORDER BY cp.total_orders ASC, cp.last_assigned ASC
+    LIMIT 1
+    """)
+    
+    best_courier = cur.fetchone()
+    
+    if best_courier:
+        courier_id = best_courier["id"]
+        
+        # Siparişi kuryeye ata
+        cur.execute("UPDATE orders SET courier_id = ? WHERE id = ?", 
+                   (courier_id, order_id))
+        cur.execute("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", 
+                   (courier_id,))
+        
+        # Kurye performansını güncelle
+        ensure_courier_performance(courier_id)
+        cur.execute("""
+        UPDATE courier_performance 
+        SET total_orders = total_orders + 1, 
+            last_assigned = ?
+        WHERE courier_id = ?
+        """, (datetime.utcnow().isoformat(), courier_id))
+        
+        conn.commit()
+        conn.close()
+        return True
+    
+    conn.close()
+    return False
+
 # ---------------- Auth: register/login ----------------
 @app.route("/auth/register", methods=["POST"])
 def auth_register():
@@ -204,7 +393,7 @@ def auth_register():
                 data_token = decode_token(token)
                 if data_token.get("role") != "admin":
                     conn.close()
-                    return jsonify({"message": "Yalnızca admin yeni admin oluşturabilir."}), 403
+                    return jsonify({"message": "Yalnızca admin yeni admin oluşturabilir."), 403
             except Exception:
                 conn.close()
                 return jsonify({"message": "Token geçersiz"}), 401
@@ -592,10 +781,16 @@ def webhook_yemeksepeti():
                        (order_uuid, external_id, vendor_id, customer_name, items, total_amount, address, payload, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (order_uuid, external_id, vendor_id, customer_name, str(items), total, address, payload, created, created))
+        order_id = cur.lastrowid
         conn.commit()
+        
+        # Siparişi kuryeye ata
+        assign_order_to_courier(order_id)
+        
     except sqlite3.IntegrityError:
         conn.close()
         return jsonify({"message": "Sipariş kaydedilirken hata (duplicate veya integrity)"}), 400
+    
     conn.close()
     return jsonify({"message": "Sipariş alındı", "order_uuid": order_uuid}), 201
 
@@ -708,6 +903,79 @@ def delete_restaurant(restaurant_id):
     conn.commit(); conn.close()
     return jsonify({"message": "Restoran silindi"})
 
+# ---------------- Neighborhood Management (admin) ----------------
+@app.route("/neighborhoods", methods=["GET"])
+@admin_required
+def list_neighborhoods():
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("SELECT * FROM neighborhoods ORDER BY name")
+    rows = cur.fetchall(); conn.close()
+    return jsonify([row_to_dict(r) for r in rows])
+
+@app.route("/neighborhoods", methods=["POST"])
+@admin_required
+def create_neighborhood():
+    data = request.get_json() or {}
+    name = data.get("name")
+    
+    if not name:
+        return jsonify({"message": "Mahalle adı gereklidir"}), 400
+    
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)",
+                   (name, datetime.utcnow().isoformat()))
+        conn.commit()
+        neighborhood_id = cur.lastrowid
+        cur.execute("SELECT * FROM neighborhoods WHERE id = ?", (neighborhood_id,))
+        neighborhood = row_to_dict(cur.fetchone())
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"message": "Bu isimde mahalle zaten var"}), 400
+    
+    conn.close()
+    return jsonify({"message": "Mahalle oluşturuldu", "neighborhood": neighborhood}), 201
+
+@app.route("/neighborhoods/<int:neighborhood_id>", methods=["DELETE"])
+@admin_required
+def delete_neighborhood(neighborhood_id):
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("DELETE FROM neighborhoods WHERE id = ?", (neighborhood_id,))
+    conn.commit(); conn.close()
+    return jsonify({"message": "Mahalle silindi"})
+
+# ---------------- Manual Order Assignment ----------------
+@app.route("/admin/assign-orders", methods=["POST"])
+@admin_required
+def manual_assign_orders():
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    # Atanmamış siparişleri bul
+    cur.execute("SELECT id FROM orders WHERE courier_id IS NULL AND status = 'yeni'")
+    unassigned_orders = cur.fetchall()
+    
+    assigned_count = 0
+    for order in unassigned_orders:
+        if assign_order_to_courier(order["id"]):
+            assigned_count += 1
+    
+    conn.close()
+    return jsonify({"message": f"{assigned_count} sipariş kuryelere atandı"})
+
+# ---------------- Courier Performance Reset ----------------
+@app.route("/admin/couriers/<int:courier_id>/reset-performance", methods=["POST"])
+@admin_required
+def reset_courier_performance(courier_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    cur.execute("UPDATE courier_performance SET total_orders = 0 WHERE courier_id = ?", (courier_id,))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"message": "Kurye performansı sıfırlandı"})
+
 # ---------------- Admin reports ----------------
 @app.route("/admin/reports/orders", methods=["GET"])
 @admin_required
@@ -757,11 +1025,45 @@ def admin_reports_orders():
             name = "Bilinmeyen Restoran"
         rest_perf.append({"vendor_id": vendor_id, "restaurant_name": name, "order_count": cnt})
     
+    # Courier distribution
+    cur.execute("""
+    SELECT c.id, c.first_name, c.last_name, cp.total_orders
+    FROM couriers c
+    LEFT JOIN courier_performance cp ON c.id = cp.courier_id
+    ORDER BY cp.total_orders DESC
+    """)
+    
+    courier_dist = []
+    for row in cur.fetchall():
+        courier_dist.append({
+            "courier_id": row["id"],
+            "courier_name": f"{row['first_name']} {row['last_name']}",
+            "total_orders": row["total_orders"] or 0
+        })
+    
+    # Neighborhood distribution
+    cur.execute("""
+    SELECT n.name, COUNT(o.id) as order_count
+    FROM neighborhoods n
+    LEFT JOIN orders o ON n.id = o.neighborhood_id
+    GROUP BY n.id
+    ORDER BY order_count DESC
+    """)
+    
+    neighborhood_dist = []
+    for row in cur.fetchall():
+        neighborhood_dist.append({
+            "neighborhood_name": row["name"],
+            "order_count": row["order_count"]
+        })
+    
     conn.close()
     return jsonify({
         "status_counts": status_counts, 
         "courier_performance": perf, 
         "restaurant_performance": rest_perf,
+        "courier_distribution": courier_dist,
+        "neighborhood_distribution": neighborhood_dist,
         "period": {"start": start, "end": end}
     })
 
