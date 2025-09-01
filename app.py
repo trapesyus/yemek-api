@@ -156,36 +156,45 @@ def handle_disconnect():
             break
 
 
+# WebSocket Event Handlers - Güncellenmiş versiyon
 @socketio.on('courier_register')
 def handle_courier_register(data):
     try:
         courier_id = data.get('courier_id')
         if courier_id:
+            # Önce mevcut bağlantıyı temizle
+            if courier_id in courier_connections:
+                old_sid = courier_connections[courier_id]
+                leave_room(f'courier_{courier_id}', sid=old_sid)
+                del courier_connections[courier_id]
+
+            # Yeni bağlantıyı kaydet
             courier_connections[courier_id] = request.sid
             join_room(f'courier_{courier_id}')
+
             print(f'Courier {courier_id} registered with SID: {request.sid}')
-            emit('registration_success', {'message': 'Kurye kaydı başarılı'})
+            emit('registration_success', {'message': 'Kurye kaydı başarılı'}, room=request.sid)
         else:
-            emit('registration_error', {'message': 'Kurye ID gerekli'})
+            emit('registration_error', {'message': 'Kurye ID gerekli'}, room=request.sid)
     except Exception as e:
         print(f'Kurye kayıt hatası: {e}')
-        emit('registration_error', {'message': 'Kayıt sırasında hata oluştu'})
+        emit('registration_error', {'message': 'Kayıt sırasında hata oluştu'}, room=request.sid)
 
 
-# Sipariş atandığında bildirim gönderme fonksiyonu
+# Sipariş atandığında bildirim gönderme fonksiyonu - Güncellenmiş
 def notify_courier_new_order(courier_id, order_data):
     try:
-        if courier_id in courier_connections:
-            socketio.emit('new_order', order_data, room=f'courier_{courier_id}')
-            print(f"Notification sent to courier {courier_id}: {order_data}")
-            return True
-        else:
-            print(f"Courier {courier_id} is not connected")
-            return False
+        room_name = f'courier_{courier_id}'
+        print(f"Oda: {room_name}, Bağlı kuryeler: {courier_connections}")
+
+        # Odaya emit et
+        socketio.emit('new_order', order_data, room=room_name)
+        print(f"Bildirim gönderildi: Courier {courier_id}, Data: {order_data}")
+        return True
+
     except Exception as e:
         print(f"Bildirim gönderme hatası: {e}")
         return False
-
 
 # ---------------- Veritabanı İşlemleri İçin Yardımcı Fonksiyonlar ----------------
 def execute_with_retry(query, params=None, max_retries=5):
