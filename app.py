@@ -159,7 +159,7 @@ def handle_disconnect():
 @socketio.on('courier_register')
 def handle_courier_register(data):
     try:
-        courier_id = data.get('courier_id')
+        courier_id = str(data.get('courier_id'))
         if courier_id:
             courier_connections[courier_id] = request.sid
             join_room(f'courier_{courier_id}')
@@ -175,6 +175,7 @@ def handle_courier_register(data):
 # Sipariş atandığında bildirim gönderme fonksiyonu
 def notify_courier_new_order(courier_id, order_data):
     try:
+        courier_id = str(courier_id)
         if courier_id in courier_connections:
             socketio.emit('new_order', order_data, room=f'courier_{courier_id}')
             print(f"Notification sent to courier {courier_id}: {order_data}")
