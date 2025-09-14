@@ -1,4 +1,4 @@
-# app.py
+# app.py (tam güncel)
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit, join_room
 from datetime import datetime, timedelta
@@ -7,7 +7,6 @@ import bcrypt
 import jwt
 import re
 import time
-import json
 from functools import wraps
 
 app = Flask(__name__)
@@ -16,18 +15,20 @@ DB_NAME = "orders.db"
 SECRET_KEY = "çok_gizli_bir_anahtar"  # PROD: environment variable ile sakla
 JWT_ALGORITHM = "HS256"
 TOKEN_EXP_HOURS = 8
+DAILY_RESET_KEY = 'last_daily_reset'
+COOLDOWN_MINUTES = 3
 
-# SocketIO inicializasyonu
+# SocketIO initialization
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
-# Kurye WebSocket bağlantıları için sözlük
+# Courier WebSocket connections map
 courier_connections = {}
 
 
 # ---------------- DB ----------------
 def get_conn():
-    conn = sqlite3.connect(DB_NAME, timeout=30)  # Timeout süresini artırdık
-    conn.execute("PRAGMA busy_timeout = 30000")  # 30 saniye busy timeout
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    conn.execute("PRAGMA busy_timeout = 30000")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -89,10 +90,11 @@ def init_db():
     )
     """)
 
-    # Restaurants table
+    # Restaurants table (user_id ile vendor olarak bağlanabilsin)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS restaurants (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
         name TEXT UNIQUE,
         fee_per_package REAL DEFAULT 5.0,
         address TEXT,
@@ -123,16 +125,62 @@ def init_db():
     )
     """)
 
-    # Courier performance table
+    # Courier performance table (cooldown sütunu eklendi)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS courier_performance (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         courier_id INTEGER UNIQUE,
         total_orders INTEGER DEFAULT 0,
         last_assigned TEXT,
+        cooldown_until TEXT,
         FOREIGN KEY (courier_id) REFERENCES couriers (id)
     )
     """)
+
+    # Meta table for storing last daily reset
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+    # Migrate if needed (add missing columns)
+    migrate_db()
+
+
+def migrate_db():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    def has_column(table, column):
+        try:
+            cur.execute(f"PRAGMA table_info({table})")
+            infos = cur.fetchall()
+            for i in infos:
+                # infos rows: cid, name, type, notnull, dflt_value, pk
+                if i[1] == column:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    # Add cooldown_until to courier_performance if missing
+    if not has_column('courier_performance', 'cooldown_until'):
+        try:
+            cur.execute("ALTER TABLE courier_performance ADD COLUMN cooldown_until TEXT")
+        except Exception:
+            pass
+
+    # Add user_id to restaurants if missing
+    if not has_column('restaurants', 'user_id'):
+        try:
+            cur.execute("ALTER TABLE restaurants ADD COLUMN user_id INTEGER")
+        except Exception:
+            pass
 
     conn.commit()
     conn.close()
@@ -148,7 +196,6 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     print('Client disconnected: ' + request.sid)
-    # Bağlantı koptuğunda sözlükten kaldır
     for courier_id, sid in list(courier_connections.items()):
         if sid == request.sid:
             del courier_connections[courier_id]
@@ -172,7 +219,6 @@ def handle_courier_register(data):
         emit('registration_error', {'message': 'Kayıt sırasında hata oluştu'})
 
 
-# Sipariş atandığında bildirim gönderme fonksiyonu
 def notify_courier_new_order(courier_id, order_data):
     try:
         courier_id = str(courier_id)
@@ -188,9 +234,8 @@ def notify_courier_new_order(courier_id, order_data):
         return False
 
 
-# ---------------- Veritabanı İşlemleri İçin Yardımcı Fonksiyonlar ----------------
+# ---------------- Veritabanı Yardımcı Fonksiyonları ----------------
 def execute_with_retry(query, params=None, max_retries=5):
-    """Veritabanı işlemlerini belirli sayıda deneme yapar"""
     for attempt in range(max_retries):
         try:
             conn = get_conn()
@@ -199,20 +244,19 @@ def execute_with_retry(query, params=None, max_retries=5):
                 cur.execute(query, params)
             else:
                 cur.execute(query)
-            conn.commit()
             result = cur.fetchall()
+            conn.commit()
             conn.close()
             return result
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e) and attempt < max_retries - 1:
-                time.sleep(0.1 * (attempt + 1))  # Üssel backoff
+                time.sleep(0.1 * (attempt + 1))
             else:
                 raise e
     return None
 
 
 def execute_write_with_retry(query, params=None, max_retries=5):
-    """Yazma işlemleri için belirli sayıda deneme yapar"""
     for attempt in range(max_retries):
         try:
             conn = get_conn()
@@ -226,10 +270,28 @@ def execute_write_with_retry(query, params=None, max_retries=5):
             return True
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e) and attempt < max_retries - 1:
-                time.sleep(0.1 * (attempt + 1))  # Üssel backoff
+                time.sleep(0.1 * (attempt + 1))
             else:
                 raise e
     return False
+
+
+# ---------------- Daily reset ----------------
+def ensure_daily_reset():
+    """Her gün (UTC) courier_performance.total_orders sıfırlanır."""
+    today = datetime.utcnow().date().isoformat()
+    result = execute_with_retry("SELECT value FROM meta WHERE key = ?", (DAILY_RESET_KEY,))
+    last = None
+    if result and len(result) > 0:
+        # result[0] is sqlite3.Row; access by column name
+        last = result[0]["value"]
+    if last != today:
+        execute_write_with_retry("UPDATE courier_performance SET total_orders = 0")
+        if last is None:
+            execute_write_with_retry("INSERT INTO meta (key, value) VALUES (?, ?)", (DAILY_RESET_KEY, today))
+        else:
+            execute_write_with_retry("UPDATE meta SET value = ? WHERE key = ?", (today, DAILY_RESET_KEY))
+        print(f"Daily reset yapıldı: {today}")
 
 
 # ---------------- Password & JWT ----------------
@@ -285,7 +347,6 @@ def token_required(f):
         except jwt.InvalidTokenError:
             return jsonify({"message": "Geçersiz token"}), 401
         return f(*args, **kwargs)
-
     return wrapped
 
 
@@ -296,7 +357,6 @@ def admin_required(f):
         if getattr(request, "user_role", None) != "admin":
             return jsonify({"message": "Admin yetkisi gerekli"}), 403
         return f(*args, **kwargs)
-
     return wrapped
 
 
@@ -307,18 +367,14 @@ def courier_required(f):
         if getattr(request, "user_role", None) != "courier":
             return jsonify({"message": "Kurye yetkisi gerekli"}), 403
         return f(*args, **kwargs)
-
     return wrapped
 
 
-# ---------------- Mahalle ve Dağıtım İşlemleri ----------------
+# ---------------- Neighborhood & Assignment ----------------
 def extract_neighborhood(address):
     if not address:
         return None
-
     address_lower = address.lower()
-
-    # Mahalle desenleri
     patterns = [
         r'(\w+)\s*mah\.',
         r'(\w+)\s*mahallesi',
@@ -326,164 +382,145 @@ def extract_neighborhood(address):
         r'mah\.\s*(\w+)',
         r'mahallesi\s*(\w+)'
     ]
-
     for pattern in patterns:
         match = re.search(pattern, address_lower)
         if match:
             neighborhood_name = match.group(1).strip().title()
             return neighborhood_name
-
     return None
 
 
 def get_or_create_neighborhood(neighborhood_name):
     if not neighborhood_name:
         return None
-
-    # Önce mahalleyi bulmaya çalış
     result = execute_with_retry("SELECT id FROM neighborhoods WHERE name = ?", (neighborhood_name,))
     if result and len(result) > 0:
         return result[0]["id"]
-
-    # Mahalle yoksa oluştur
-    success = execute_write_with_retry(
-        "INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)",
-        (neighborhood_name, datetime.utcnow().isoformat())
-    )
-
+    success = execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)",
+                                       (neighborhood_name, datetime.utcnow().isoformat()))
     if success:
-        # Yeni oluşturulan mahallenin ID'sini al
         result = execute_with_retry("SELECT id FROM neighborhoods WHERE name = ?", (neighborhood_name,))
         if result and len(result) > 0:
             return result[0]["id"]
-
     return None
 
 
 def ensure_courier_performance(courier_id):
-    # Kurye performans kaydı var mı kontrol et
     result = execute_with_retry("SELECT 1 FROM courier_performance WHERE courier_id = ?", (courier_id,))
     if not result or len(result) == 0:
-        # Kurye performans kaydı yoksa oluştur
         execute_write_with_retry(
-            "INSERT INTO courier_performance (courier_id, last_assigned) VALUES (?, ?)",
+            "INSERT INTO courier_performance (courier_id, last_assigned, total_orders) VALUES (?, ?, 0)",
             (courier_id, datetime.utcnow().isoformat())
         )
 
 
 def assign_order_to_courier(order_id):
-    # Sipariş bilgilerini al
+    # İlk olarak günlük reset kontrolü
+    ensure_daily_reset()
+
     result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
     if not result or len(result) == 0:
         return False
-
     order = result[0]
 
-    # Adresten mahalle bilgisini çıkar
     address = order["address"]
     neighborhood_name = extract_neighborhood(address)
     neighborhood_id = None
 
     if neighborhood_name:
-        # Mahalleyi kaydet veya getir
         neighborhood_id = get_or_create_neighborhood(neighborhood_name)
+        execute_write_with_retry("UPDATE orders SET neighborhood_id = ? WHERE id = ?", (neighborhood_id, order_id))
 
-        # Siparişin mahalle bilgisini güncelle
-        execute_write_with_retry(
-            "UPDATE orders SET neighborhood_id = ? WHERE id = ?",
-            (neighborhood_id, order_id)
-        )
-
-    # Aynı mahalledeki son 5 dakika içindeki siparişleri bul
     five_min_ago = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
+    now_iso = datetime.utcnow().isoformat()
 
+    # Eğer aynı mahallede son 5 dakikada atanmış/aktif siparişleri olan kurye varsa onlara öncelik ver
     if neighborhood_id:
-        # Aynı mahalledeki son siparişleri ve kuryelerini bul
         result = execute_with_retry("""
-        SELECT courier_id, COUNT(*) as order_count 
-        FROM orders 
-        WHERE neighborhood_id = ? 
-          AND created_at >= ? 
+        SELECT courier_id, COUNT(*) as order_count
+        FROM orders
+        WHERE neighborhood_id = ?
+          AND created_at >= ?
           AND status IN ('yeni', 'teslim alındı')
           AND courier_id IS NOT NULL
         GROUP BY courier_id
         ORDER BY order_count ASC
         """, (neighborhood_id, five_min_ago))
 
-        # Bu mahallede aktif siparişi olan kuryeleri önceliklendir
-        for courier in result:
-            courier_id = courier["courier_id"]
+        if result:
+            for courier_row in result:
+                courier_id = courier_row["courier_id"]
+                # Kuryenin durumunu kontrol et
+                status_result = execute_with_retry("SELECT status FROM couriers WHERE id = ?", (courier_id,))
+                if status_result and status_result[0]["status"] in ("boşta", "teslimatta"):
+                    # Ata ve cooldown'u güncelle — aynı mahalle ise cooldown içinde olsa da alabilir
+                    execute_write_with_retry("UPDATE orders SET courier_id = ? WHERE id = ?", (courier_id, order_id))
+                    execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
 
-            # Kuryenin durumunu kontrol et
-            status_result = execute_with_retry("SELECT status FROM couriers WHERE id = ?", (courier_id,))
-            if status_result and status_result[0]["status"] in ("boşta", "teslimatta"):
-                # Bu kuryeye siparişi ata
-                execute_write_with_retry("UPDATE orders SET courier_id = ? WHERE id = ?", (courier_id, order_id))
-                execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
+                    ensure_courier_performance(courier_id)
+                    # Aynı mahalledeyse cooldown'u uzat (yeniden atama için)
+                    cooldown_until = (datetime.utcnow() + timedelta(minutes=COOLDOWN_MINUTES)).isoformat()
+                    execute_write_with_retry("""
+                    UPDATE courier_performance
+                    SET total_orders = COALESCE(total_orders, 0) + 1,
+                        last_assigned = ?,
+                        cooldown_until = ?
+                    WHERE courier_id = ?
+                    """, (now_iso, cooldown_until, courier_id))
 
-                # Kurye performansını güncelle
-                ensure_courier_performance(courier_id)
-                execute_write_with_retry("""
-                UPDATE courier_performance 
-                SET total_orders = total_orders + 1, 
-                    last_assigned = ?
-                WHERE courier_id = ?
-                """, (datetime.utcnow().isoformat(), courier_id))
+                    order_result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
+                    if order_result and len(order_result) > 0:
+                        order_d = row_to_dict(order_result[0])
+                        order_data = {
+                            'order_id': order_d['id'],
+                            'order_uuid': order_d['order_uuid'],
+                            'customer_name': order_d['customer_name'],
+                            'address': order_d['address'],
+                            'total_amount': order_d['total_amount'],
+                            'items': order_d['items']
+                        }
+                        notify_courier_new_order(courier_id, order_data)
+                    return True
 
-                # Kuryeye bildirim gönder
-                order_result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
-                if order_result and len(order_result) > 0:
-                    order = row_to_dict(order_result[0])
-                    order_data = {
-                        'order_id': order['id'],
-                        'order_uuid': order['order_uuid'],
-                        'customer_name': order['customer_name'],
-                        'address': order['address'],
-                        'total_amount': order['total_amount'],
-                        'items': order['items']
-                    }
-                    notify_courier_new_order(courier_id, order_data)
-
-                return True
-
-    # Eğer aynı mahallede aktif kurye yoksa, en az siparişi olan kuryeyi bul
+    # Aynı mahallede öncelik yoksa: cooldown'da olmayan en az işi olan kurye
     result = execute_with_retry("""
-    SELECT c.id, COALESCE(cp.total_orders, 0) as total_orders, 
-           COALESCE(cp.last_assigned, '2000-01-01T00:00:00.000000') as last_assigned
+    SELECT c.id, COALESCE(cp.total_orders, 0) as total_orders,
+           COALESCE(cp.last_assigned, '2000-01-01T00:00:00.000000') as last_assigned,
+           cp.cooldown_until
     FROM couriers c
     LEFT JOIN courier_performance cp ON c.id = cp.courier_id
     WHERE c.status IN ('boşta', 'teslimatta')
+      AND (cp.cooldown_until IS NULL OR cp.cooldown_until <= ?)
     ORDER BY total_orders ASC, last_assigned ASC
     LIMIT 1
-    """)
+    """, (now_iso,))
 
     if result and len(result) > 0:
         courier_id = result[0]["id"]
 
-        # Siparişi kuryeye ata
         execute_write_with_retry("UPDATE orders SET courier_id = ? WHERE id = ?", (courier_id, order_id))
         execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
 
-        # Kurye performansını güncelle
         ensure_courier_performance(courier_id)
+        cooldown_until = (datetime.utcnow() + timedelta(minutes=COOLDOWN_MINUTES)).isoformat()
         execute_write_with_retry("""
-        UPDATE courier_performance 
-        SET total_orders = COALESCE(total_orders, 0) + 1, 
-            last_assigned = ?
+        UPDATE courier_performance
+        SET total_orders = COALESCE(total_orders, 0) + 1,
+            last_assigned = ?,
+            cooldown_until = ?
         WHERE courier_id = ?
-        """, (datetime.utcnow().isoformat(), courier_id))
+        """, (now_iso, cooldown_until, courier_id))
 
-        # Kuryeye bildirim gönder
         order_result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
         if order_result and len(order_result) > 0:
-            order = row_to_dict(order_result[0])
+            order_d = row_to_dict(order_result[0])
             order_data = {
-                'order_id': order['id'],
-                'order_uuid': order['order_uuid'],
-                'customer_name': order['customer_name'],
-                'address': order['address'],
-                'total_amount': order['total_amount'],
-                'items': order['items']
+                'order_id': order_d['id'],
+                'order_uuid': order_d['order_uuid'],
+                'customer_name': order_d['customer_name'],
+                'address': order_d['address'],
+                'total_amount': order_d['total_amount'],
+                'items': order_d['items']
             }
             notify_courier_new_order(courier_id, order_data)
 
@@ -496,10 +533,10 @@ def assign_order_to_courier(order_id):
 @app.route("/auth/register", methods=["POST"])
 def auth_register():
     """
-    Body: { username, password, role (admin|courier), first_name, last_name, email, phone }
+    Body: { username, password, role (admin|courier|vendor), first_name, last_name, email, phone, restaurant_name, address }
     - courier: anyone can self-register
-    - admin: if no admin exists, allowed; if admin exists, only existing admin (via Bearer token) can create new admin
-    Returns created user summary (not including password hash)
+    - vendor: restaurant owner registers and a restaurant row is created and linked
+    - admin: if no admin exists, allowed; if exists, only an admin can create another admin (via Bearer token)
     """
     data = request.get_json() or {}
     username = data.get("username")
@@ -508,10 +545,10 @@ def auth_register():
 
     if not username or not password:
         return jsonify({"message": "username ve password gerekli"}), 400
-    if role not in ("admin", "courier"):
-        return jsonify({"message": "role sadece 'admin' veya 'courier' olabilir"}), 400
+    if role not in ("admin", "courier", "vendor"):
+        return jsonify({"message": "role sadece 'admin', 'courier' veya 'vendor' olabilir"}), 400
 
-    # If admin asked and admin exists, require admin token
+    # Admin creation protection
     if role == "admin":
         result = execute_with_retry("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1")
         has_admin = result is not None and len(result) > 0
@@ -529,13 +566,11 @@ def auth_register():
 
     hashed = hash_password(password)
     try:
-        # Kullanıcıyı oluştur
         execute_write_with_retry(
             "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
             (username, hashed, role, datetime.utcnow().isoformat())
         )
 
-        # Yeni kullanıcının ID'sini al
         result = execute_with_retry("SELECT id FROM users WHERE username = ?", (username,))
         if not result or len(result) == 0:
             return jsonify({"message": "Kullanıcı oluşturulamadı"}), 500
@@ -543,31 +578,51 @@ def auth_register():
         user_id = result[0]["id"]
 
         courier_obj = None
+        vendor_obj = None
         if role == "courier":
             first_name = data.get("first_name") or ""
             last_name = data.get("last_name") or ""
             email = data.get("email")
             phone = data.get("phone")
 
-            # Kurye kaydını oluştur
             execute_write_with_retry(
-                """INSERT INTO couriers (user_id, first_name, last_name, email, phone, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                "INSERT INTO couriers (user_id, first_name, last_name, email, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (user_id, first_name, last_name, email, phone, datetime.utcnow().isoformat())
             )
 
-            # Kurye bilgilerini al
             result = execute_with_retry("SELECT * FROM couriers WHERE user_id = ?", (user_id,))
             if result and len(result) > 0:
                 courier_obj = row_to_dict(result[0])
 
+        if role == "vendor":
+            restaurant_name = data.get("restaurant_name") or data.get("name")
+            address = data.get("address", "")
+            phone = data.get("phone", "")
+
+            if not restaurant_name:
+                return jsonify({"message": "Vendor kaydı için restaurant_name gerekli"}), 400
+
+            existing = execute_with_retry("SELECT 1 FROM restaurants WHERE name = ?", (restaurant_name,))
+            if existing and len(existing) > 0:
+                return jsonify({"message": "Bu isimde bir restoran zaten var"}), 400
+
+            execute_write_with_retry(
+                "INSERT INTO restaurants (user_id, name, address, phone, created_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, restaurant_name, address, phone, datetime.utcnow().isoformat())
+            )
+
+            result = execute_with_retry("SELECT * FROM restaurants WHERE user_id = ?", (user_id,))
+            if result and len(result) > 0:
+                vendor_obj = row_to_dict(result[0])
+
     except sqlite3.IntegrityError as e:
         return jsonify({"message": "Kullanıcı adı veya e-posta zaten var", "error": str(e)}), 400
 
-    # prepare response object (no password hash)
     user_resp = {"id": user_id, "username": username, "role": role, "created_at": datetime.utcnow().isoformat()}
     if role == "courier":
         user_resp["courier"] = courier_obj
+    if role == "vendor":
+        user_resp["restaurant"] = vendor_obj
 
     return jsonify({"message": f"{role} oluşturuldu", "user": user_resp}), 201
 
@@ -576,7 +631,7 @@ def auth_register():
 def auth_login():
     """
     Body: { username, password }
-    Returns: { token, user: { id, username, role, created_at, courier: { ... } (optional) } }
+    Returns: { token, user: { id, username, role, created_at, courier: {...}, restaurant: {...} } }
     """
     data = request.get_json() or {}
     username = data.get("username")
@@ -603,13 +658,15 @@ def auth_login():
         "created_at": user_row["created_at"]
     }
 
-    # attach courier profile if applicable
     if role == "courier":
-        result = execute_with_retry(
-            "SELECT id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?",
-            (user_id,))
+        result = execute_with_retry("SELECT id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?", (user_id,))
         if result and len(result) > 0:
             user_out["courier"] = row_to_dict(result[0])
+
+    if role == "vendor":
+        result = execute_with_retry("SELECT id, user_id, name, fee_per_package, address, phone, is_active, created_at FROM restaurants WHERE user_id = ?", (user_id,))
+        if result and len(result) > 0:
+            user_out["restaurant"] = row_to_dict(result[0])
 
     return jsonify({"token": token, "user": user_out})
 
@@ -629,11 +686,7 @@ def update_fcm_token(courier_id):
     if not fcm_token:
         return jsonify({"message": "FCM token gerekli"}), 400
 
-    execute_write_with_retry(
-        "UPDATE couriers SET fcm_token = ? WHERE id = ?",
-        (fcm_token, courier_id)
-    )
-
+    execute_write_with_retry("UPDATE couriers SET fcm_token = ? WHERE id = ?", (fcm_token, courier_id))
     return jsonify({"message": "FCM token güncellendi"})
 
 
@@ -648,7 +701,6 @@ def admin_create_courier():
         return jsonify({"message": "username ve password gerekli"}), 400
     email = data.get("email")
 
-    # Check if username already exists
     result = execute_with_retry("SELECT 1 FROM users WHERE username = ?", (username,))
     if result and len(result) > 0:
         return jsonify({"message": "Kullanıcı adı kullanılıyor"}), 400
@@ -660,38 +712,23 @@ def admin_create_courier():
 
     hashed = hash_password(password)
     try:
-        # Create user
-        execute_write_with_retry(
-            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, 'courier', ?)",
-            (username, hashed, datetime.utcnow().isoformat())
-        )
+        execute_write_with_retry("INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, 'courier', ?)",
+                                 (username, hashed, datetime.utcnow().isoformat()))
 
-        # Get user ID
         result = execute_with_retry("SELECT id FROM users WHERE username = ?", (username,))
         if not result or len(result) == 0:
             return jsonify({"message": "Kullanıcı oluşturulamadı"}), 500
 
         user_id = result[0]["id"]
-
-        # Create courier
         first_name = data.get("first_name") or ""
         last_name = data.get("last_name") or ""
         phone = data.get("phone") or ""
 
-        execute_write_with_retry(
-            """INSERT INTO couriers (user_id, first_name, last_name, email, phone, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_id, first_name, last_name, email, phone, datetime.utcnow().isoformat())
-        )
+        execute_write_with_retry("INSERT INTO couriers (user_id, first_name, last_name, email, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                 (user_id, first_name, last_name, email, phone, datetime.utcnow().isoformat()))
 
-        # Get created courier
-        result = execute_with_retry(
-            "SELECT id, user_id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?",
-            (user_id,))
-        if result and len(result) > 0:
-            courier_obj = row_to_dict(result[0])
-        else:
-            courier_obj = None
+        result = execute_with_retry("SELECT id, user_id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?", (user_id,))
+        courier_obj = row_to_dict(result[0]) if result and len(result) > 0 else None
 
         return jsonify({
             "message": "Kurye oluşturuldu",
@@ -714,11 +751,13 @@ def me():
 
     user = row_to_dict(result[0])
     if user["role"] == "courier":
-        result = execute_with_retry(
-            "SELECT id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?",
-            (uid,))
+        result = execute_with_retry("SELECT id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?", (uid,))
         if result and len(result) > 0:
             user["courier"] = row_to_dict(result[0])
+    if user["role"] == "vendor":
+        result = execute_with_retry("SELECT id, user_id, name, fee_per_package, address, phone, is_active, created_at FROM restaurants WHERE user_id = ?", (uid,))
+        if result and len(result) > 0:
+            user["restaurant"] = row_to_dict(result[0])
 
     return jsonify(user)
 
@@ -738,12 +777,12 @@ def update_user(user_id):
     fields = []
     values = []
     if "role" in data:
-        if data["role"] not in ("admin", "courier"):
-            return jsonify({"message": "role admin veya courier olmalı"}), 400
-        fields.append("role = ?");
+        if data["role"] not in ("admin", "courier", "vendor"):
+            return jsonify({"message": "role admin, courier veya vendor olmalı"}), 400
+        fields.append("role = ?")
         values.append(data["role"])
     if "password" in data:
-        fields.append("password_hash = ?");
+        fields.append("password_hash = ?")
         values.append(hash_password(data["password"]))
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
@@ -761,8 +800,8 @@ def update_user(user_id):
 @app.route("/users/<int:user_id>", methods=["DELETE"])
 @admin_required
 def delete_user(user_id):
-    # delete courier row if exists, then user
     execute_write_with_retry("DELETE FROM couriers WHERE user_id = ?", (user_id,))
+    execute_write_with_retry("UPDATE restaurants SET user_id = NULL WHERE user_id = ?", (user_id,))
     execute_write_with_retry("DELETE FROM users WHERE id = ?", (user_id,))
     return jsonify({"message": "Kullanıcı silindi (ve bağlı kurye kaydı kaldırıldı)"})
 
@@ -771,8 +810,7 @@ def delete_user(user_id):
 @app.route("/couriers", methods=["GET"])
 @admin_required
 def admin_list_couriers():
-    result = execute_with_retry(
-        "SELECT id, user_id, first_name, last_name, email, phone, status, created_at, fcm_token FROM couriers")
+    result = execute_with_retry("SELECT id, user_id, first_name, last_name, email, phone, status, created_at, fcm_token FROM couriers")
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
 
 
@@ -781,11 +819,11 @@ def admin_list_couriers():
 def admin_update_courier(courier_id):
     data = request.get_json() or {}
     allowed = ("first_name", "last_name", "email", "phone", "status", "fcm_token")
-    fields = [];
+    fields = []
     values = []
     for k in allowed:
         if k in data:
-            fields.append(f"{k} = ?");
+            fields.append(f"{k} = ?")
             values.append(data[k])
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
@@ -797,7 +835,6 @@ def admin_update_courier(courier_id):
         success = execute_write_with_retry(query, values)
         if not success:
             return jsonify({"message": "Kurye güncellenirken hata oluştu"}), 500
-
         return jsonify({"message": "Kurye güncellendi"})
     except sqlite3.IntegrityError as e:
         return jsonify({"message": "Integrity error", "error": str(e)}), 400
@@ -814,7 +851,6 @@ def admin_delete_courier(courier_id):
 @app.route("/couriers/<int:courier_id>/status", methods=["PATCH"])
 @token_required
 def courier_update_status(courier_id):
-    # courier can update own status; admin can update any
     if request.user_role != "admin":
         result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
         if not result or len(result) == 0 or result[0]["user_id"] != request.user_id:
@@ -832,14 +868,12 @@ def courier_update_status(courier_id):
 @app.route("/couriers/<int:courier_id>/orders", methods=["GET"])
 @token_required
 def courier_get_orders(courier_id):
-    # courier can view own assigned orders or admin
     if request.user_role != "admin":
         result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
         if not result or len(result) == 0 or result[0]["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
 
-    result = execute_with_retry("SELECT * FROM orders WHERE courier_id = ? AND status IN ('yeni','teslim alındı')",
-                                (courier_id,))
+    result = execute_with_retry("SELECT * FROM orders WHERE courier_id = ? AND status IN ('yeni','teslim alındı')", (courier_id,))
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
 
 
@@ -863,11 +897,8 @@ def courier_pickup_order(courier_id, order_id):
     execute_write_with_retry("UPDATE orders SET status = 'teslim alındı', updated_at = ? WHERE id = ?", (now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
 
-    # Add to delivery history
-    execute_write_with_retry(
-        "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
-        (order_id, courier_id, 'teslim alındı', 'Kurye siparişi teslim aldı', now)
-    )
+    execute_write_with_retry("INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+                             (order_id, courier_id, 'teslim alındı', 'Kurye siparişi teslim aldı', now))
 
     return jsonify({"message": "Sipariş teslim alındı"})
 
@@ -892,11 +923,8 @@ def courier_deliver_order(courier_id, order_id):
     execute_write_with_retry("UPDATE orders SET status = 'teslim edildi', updated_at = ? WHERE id = ?", (now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
 
-    # Add to delivery history
-    execute_write_with_retry(
-        "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
-        (order_id, courier_id, 'teslim edildi', 'Sipariş başarıyla teslim edildi', now)
-    )
+    execute_write_with_retry("INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+                             (order_id, courier_id, 'teslim edildi', 'Sipariş başarıyla teslim edildi', now))
 
     return jsonify({"message": "Sipariş teslim edildi"})
 
@@ -919,17 +947,12 @@ def courier_fail_order(courier_id, order_id):
         return jsonify({"message": "Sipariş bulunamadı veya atanmadı"}), 404
 
     now = datetime.utcnow().isoformat()
-    execute_write_with_retry(
-        "UPDATE orders SET status = 'teslim edilemedi', delivery_failed_reason = ?, updated_at = ? WHERE id = ?",
-        (reason, now, order_id)
-    )
+    execute_write_with_retry("UPDATE orders SET status = 'teslim edilemedi', delivery_failed_reason = ?, updated_at = ? WHERE id = ?",
+                             (reason, now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
 
-    # Add to delivery history
-    execute_write_with_retry(
-        "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
-        (order_id, courier_id, 'teslim edilemedi', f'Teslimat başarısız: {reason}', now)
-    )
+    execute_write_with_retry("INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+                             (order_id, courier_id, 'teslim edilemedi', f'Teslimat başarısız: {reason}', now))
 
     return jsonify({"message": "Teslimat başarısız olarak işaretlendi"})
 
@@ -937,17 +960,16 @@ def courier_fail_order(courier_id, order_id):
 @app.route("/couriers/<int:courier_id>/delivery-history", methods=["GET"])
 @token_required
 def courier_delivery_history(courier_id):
-    # courier can view own delivery history
     if request.user_role != "admin":
         result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
         if not result or len(result) == 0 or result[0]["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
 
     result = execute_with_retry("""
-        SELECT dh.*, o.customer_name, o.address, o.total_amount 
-        FROM delivery_history dh 
-        JOIN orders o ON dh.order_id = o.id 
-        WHERE dh.courier_id = ? 
+        SELECT dh.*, o.customer_name, o.address, o.total_amount
+        FROM delivery_history dh
+        JOIN orders o ON dh.order_id = o.id
+        WHERE dh.courier_id = ?
         ORDER BY dh.created_at DESC
     """, (courier_id,))
 
@@ -969,24 +991,18 @@ def webhook_yemeksepeti():
     order_uuid = f"o-{int(datetime.utcnow().timestamp() * 1000)}"
 
     try:
-        # Siparişi kaydet
-        execute_write_with_retry(
-            """INSERT INTO orders
+        execute_write_with_retry("""
+            INSERT INTO orders
                (order_uuid, external_id, vendor_id, customer_name, items, total_amount, address, payload, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (order_uuid, external_id, vendor_id, customer_name, str(items), total, address, payload, created, created)
-        )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (order_uuid, external_id, vendor_id, customer_name, str(items), total, address, payload, created, created))
 
-        # Yeni siparişin ID'sini al
         result = execute_with_retry("SELECT id FROM orders WHERE order_uuid = ?", (order_uuid,))
         if result and len(result) > 0:
             order_id = result[0]["id"]
-
-            # Siparişi kuryeye ata (async olarak çalıştırılabilir)
             try:
                 assign_order_to_courier(order_id)
             except Exception as e:
-                # Atama hatası ana işlemi etkilemesin, sadece loglayalım
                 print(f"Sipariş atama hatası: {e}")
 
         return jsonify({"message": "Sipariş alındı", "order_uuid": order_uuid}), 201
@@ -1003,7 +1019,6 @@ def admin_list_orders():
         result = execute_with_retry("SELECT * FROM orders WHERE status = ? ORDER BY created_at DESC", (status_filter,))
     else:
         result = execute_with_retry("SELECT * FROM orders ORDER BY created_at DESC")
-
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
 
 
@@ -1012,16 +1027,15 @@ def admin_list_orders():
 def admin_patch_order(order_id):
     data = request.get_json() or {}
     allowed = ("status", "courier_id", "customer_name", "items", "total_amount", "address")
-    fields = [];
+    fields = []
     values = []
     for k in allowed:
         if k in data:
-            fields.append(f"{k} = ?");
+            fields.append(f"{k} = ?")
             values.append(data[k])
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
 
-    # Add updated_at timestamp
     fields.append("updated_at = ?")
     values.append(datetime.utcnow().isoformat())
 
@@ -1055,25 +1069,17 @@ def create_restaurant():
     fee_per_package = data.get("fee_per_package", 5.0)
     address = data.get("address", "")
     phone = data.get("phone", "")
+    user_id = data.get("user_id")  # admin can link a user
 
     if not name:
         return jsonify({"message": "Restoran adı gereklidir"}), 400
 
     try:
-        execute_write_with_retry(
-            """INSERT INTO restaurants 
-               (name, fee_per_package, address, phone, created_at) 
-               VALUES (?, ?, ?, ?, ?)""",
-            (name, fee_per_package, address, phone, datetime.utcnow().isoformat())
-        )
+        execute_write_with_retry("INSERT INTO restaurants (user_id, name, fee_per_package, address, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                 (user_id, name, fee_per_package, address, phone, datetime.utcnow().isoformat()))
 
-        # Get created restaurant
         result = execute_with_retry("SELECT * FROM restaurants WHERE name = ?", (name,))
-        if result and len(result) > 0:
-            restaurant = row_to_dict(result[0])
-        else:
-            restaurant = None
-
+        restaurant = row_to_dict(result[0]) if result and len(result) > 0 else None
         return jsonify({"message": "Restoran oluşturuldu", "restaurant": restaurant}), 201
 
     except sqlite3.IntegrityError:
@@ -1084,12 +1090,12 @@ def create_restaurant():
 @admin_required
 def update_restaurant(restaurant_id):
     data = request.get_json() or {}
-    allowed = ("name", "fee_per_package", "address", "phone", "is_active")
-    fields = [];
+    allowed = ("name", "fee_per_package", "address", "phone", "is_active", "user_id")
+    fields = []
     values = []
     for k in allowed:
         if k in data:
-            fields.append(f"{k} = ?");
+            fields.append(f"{k} = ?")
             values.append(data[k])
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
@@ -1129,18 +1135,10 @@ def create_neighborhood():
         return jsonify({"message": "Mahalle adı gereklidir"}), 400
 
     try:
-        execute_write_with_retry(
-            "INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)",
-            (name, datetime.utcnow().isoformat())
-        )
-
-        # Get created neighborhood
+        execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)",
+                                 (name, datetime.utcnow().isoformat()))
         result = execute_with_retry("SELECT * FROM neighborhoods WHERE name = ?", (name,))
-        if result and len(result) > 0:
-            neighborhood = row_to_dict(result[0])
-        else:
-            neighborhood = None
-
+        neighborhood = row_to_dict(result[0]) if result and len(result) > 0 else None
         return jsonify({"message": "Mahalle oluşturuldu", "neighborhood": neighborhood}), 201
 
     except sqlite3.IntegrityError:
@@ -1158,20 +1156,17 @@ def delete_neighborhood(neighborhood_id):
 @app.route("/admin/assign-orders", methods=["POST"])
 @admin_required
 def manual_assign_orders():
-    # Atanmamış siparişleri bul
     result = execute_with_retry("SELECT id FROM orders WHERE courier_id IS NULL AND status = 'yeni'")
     if not result:
         return jsonify({"message": "Atanmamış sipariş bulunamadı"})
-
     assigned_count = 0
     for order in result:
         if assign_order_to_courier(order["id"]):
             assigned_count += 1
-
     return jsonify({"message": f"{assigned_count} sipariş kuryelere atandı"})
 
 
-# ---------------- Courier Performance Reset ----------------
+# ---------------- Courier Performance Reset (admin manual) ----------------
 @app.route("/admin/couriers/<int:courier_id>/reset-performance", methods=["POST"])
 @admin_required
 def reset_courier_performance(courier_id):
@@ -1194,74 +1189,62 @@ def admin_reports_orders():
     except Exception:
         return jsonify({"message": "Tarih formatı YYYY-MM-DD olmalı"}), 400
 
-    # Status counts
     result = execute_with_retry("""
         SELECT status, COUNT(*) as cnt FROM orders
         WHERE created_at >= ? AND created_at < ? GROUP BY status
     """, (start_dt.isoformat(), end_dt.isoformat()))
+    status_counts = {r["status"]: r["cnt"] for r in result} if result else {}
 
-    status_counts = {row[0]: row[1] for row in result} if result else {}
-
-    # Courier performance
     result = execute_with_retry("""
         SELECT courier_id, COUNT(*) as delivered_count FROM orders
         WHERE created_at >= ? AND created_at < ? AND status = 'teslim edildi' GROUP BY courier_id
     """, (start_dt.isoformat(), end_dt.isoformat()))
-
     perf = []
     if result:
-        for row in result:
-            courier_id = row[0]
-            cnt = row[1]
+        for r in result:
+            courier_id = r["courier_id"]
+            cnt = r["delivered_count"]
             if not courier_id:
                 name = "Atanmamış"
             else:
-                r = execute_with_retry("SELECT first_name, last_name FROM couriers WHERE id = ?", (courier_id,))
-                if r and len(r) > 0:
-                    name = f"{r[0]['first_name']} {r[0]['last_name']}"
+                rr = execute_with_retry("SELECT first_name, last_name FROM couriers WHERE id = ?", (courier_id,))
+                if rr and len(rr) > 0:
+                    name = f"{rr[0]['first_name']} {rr[0]['last_name']}"
                 else:
                     name = "Bilinmeyen Kurye"
             perf.append({"courier_id": courier_id, "courier_name": name, "delivered_orders": cnt})
 
-    # Restaurant performance
     result = execute_with_retry("""
         SELECT vendor_id, COUNT(*) as order_count FROM orders
         WHERE created_at >= ? AND created_at < ? GROUP BY vendor_id
     """, (start_dt.isoformat(), end_dt.isoformat()))
-
     rest_perf = []
     if result:
-        for row in result:
-            vendor_id = row[0]
-            cnt = row[1]
+        for r in result:
+            vendor_id = r["vendor_id"]
+            cnt = r["order_count"]
             if vendor_id:
-                r = execute_with_retry("SELECT name FROM restaurants WHERE id = ?", (vendor_id,))
-                if r and len(r) > 0:
-                    name = r[0]['name']
-                else:
-                    name = "Bilinmeyen Restoran"
+                rr = execute_with_retry("SELECT name FROM restaurants WHERE id = ?", (vendor_id,))
+                name = rr[0]["name"] if rr and len(rr) > 0 else "Bilinmeyen Restoran"
             else:
                 name = "Bilinmeyen Restoran"
             rest_perf.append({"vendor_id": vendor_id, "restaurant_name": name, "order_count": cnt})
 
-    # Courier distribution
     result = execute_with_retry("""
         SELECT c.id, c.first_name, c.last_name, COALESCE(cp.total_orders, 0) as total_orders
         FROM couriers c
         LEFT JOIN courier_performance cp ON c.id = cp.courier_id
         ORDER BY total_orders DESC
     """)
-
     courier_dist = []
     if result:
-        for row in result:
+        for r in result:
             courier_dist.append({
-                "courier_id": row["id"],
-                "courier_name": f"{row['first_name']} {row['last_name']}",
-                "total_orders": row["total_orders"]
+                "courier_id": r["id"],
+                "courier_name": f"{r['first_name']} {r['last_name']}",
+                "total_orders": r["total_orders"]
             })
 
-    # Neighborhood distribution
     result = execute_with_retry("""
         SELECT n.name, COUNT(o.id) as order_count
         FROM neighborhoods n
@@ -1269,13 +1252,12 @@ def admin_reports_orders():
         GROUP BY n.id
         ORDER BY order_count DESC
     """)
-
     neighborhood_dist = []
     if result:
-        for row in result:
+        for r in result:
             neighborhood_dist.append({
-                "neighborhood_name": row["name"],
-                "order_count": row["order_count"]
+                "neighborhood_name": r["name"],
+                "order_count": r["order_count"]
             })
 
     return jsonify({
