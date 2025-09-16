@@ -1268,6 +1268,67 @@ def admin_reports_orders():
         "neighborhood_distribution": neighborhood_dist,
         "period": {"start": start, "end": end}
     })
+#-----Restoran sipariş durumu-------Vendor - kendi restoran siparişlerini görme
+
+@app.route("/vendor/orders", methods=["GET"])
+@token_required
+def vendor_get_orders():
+    # Sadece vendor rolü erişebilir
+    if getattr(request, "user_role", None) != "vendor":
+        return jsonify({"message": "Vendor yetkisi gerekli"}), 403
+
+    # Bu kullanıcıya ait restoranları al
+    restaurants = execute_with_retry("SELECT id FROM restaurants WHERE user_id = ?", (request.user_id,))
+    if not restaurants or len(restaurants) == 0:
+        return jsonify([])  # Restoranı yoksa boş liste dön
+
+    rest_ids = [str(r["id"]) for r in restaurants]
+    # Query parametreleri
+    status = request.args.get("status")              # örn: "yeni", "teslim edildi"
+    start_date = request.args.get("start_date")     # YYYY-MM-DD
+    end_date = request.args.get("end_date")         # YYYY-MM-DD (dahil edilmez -> +1 day)
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except Exception:
+        page = 1
+    try:
+        per_page = max(1, int(request.args.get("per_page", 50)))
+    except Exception:
+        per_page = 50
+    offset = (page - 1) * per_page
+
+    # Temel sorgu
+    placeholders = ",".join(["?"] * len(rest_ids))
+    sql = f"SELECT * FROM orders WHERE vendor_id IN ({placeholders})"
+    params = rest_ids.copy()
+
+    # Filtreleri ekle
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    if start_date:
+        try:
+            sd = datetime.strptime(start_date, "%Y-%m-%d")
+            sql += " AND created_at >= ?"
+            params.append(sd.isoformat())
+        except Exception:
+            return jsonify({"message": "start_date formatı YYYY-MM-DD olmalı"}), 400
+    if end_date:
+        try:
+            ed = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+            sql += " AND created_at < ?"
+            params.append(ed.isoformat())
+        except Exception:
+            return jsonify({"message": "end_date formatı YYYY-MM-DD olmalı"}), 400
+
+    # Sıralama ve sayfalandırma
+    sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params.append(per_page)
+    params.append(offset)
+
+    result = execute_with_retry(sql, tuple(params))
+    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
 
 
 # ---------------- Health ----------------
