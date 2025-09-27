@@ -1361,15 +1361,15 @@ def delete_restaurant(restaurant_id):
     execute_write_with_retry("DELETE FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
     return jsonify({"message": "Restoran silindi"})
 
-# ---------------- Neighborhood Management (admin) ----------------
+# ---------------- Neighborhood Management ----------------
 @app.route("/neighborhoods", methods=["GET"])
-@admin_required
+@token_required  # Sadece genel token gerekiyor - GET için
 def list_neighborhoods():
     result = execute_with_retry("SELECT * FROM neighborhoods ORDER BY name")
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
 
 @app.route("/neighborhoods", methods=["POST"])
-@admin_required
+@admin_required  # Admin token gerekiyor - POST için
 def create_neighborhood():
     data = request.get_json() or {}
     name = data.get("name")
@@ -1396,7 +1396,7 @@ def create_neighborhood():
         return jsonify({"message": "Bu isimde mahalle zaten var"}), 400
 
 @app.route("/neighborhoods/<int:neighborhood_id>", methods=["DELETE"])
-@admin_required
+@admin_required  # Admin token gerekiyor - DELETE için
 def delete_neighborhood(neighborhood_id):
     execute_write_with_retry("DELETE FROM neighborhoods WHERE id = ?", (neighborhood_id,))
     return jsonify({"message": "Mahalle silindi"})
