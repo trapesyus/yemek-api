@@ -39,11 +39,17 @@ def row_to_dict(row):
         return None
     return {k: row[k] for k in row.keys()}
 
+def column_exists(conn, table, column):
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    cols = [r[1] for r in cur.fetchall()]
+    return column in cols
+
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
-    # Users table
+    # Users table (restaurant_id as TEXT)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +57,7 @@ def init_db():
         password_hash BLOB,
         role TEXT,
         created_at TEXT,
-        restaurant_id INTEGER
+        restaurant_id TEXT
     )
     """)
 
@@ -70,7 +76,7 @@ def init_db():
     )
     """)
 
-    # Orders table
+    # Orders table (vendor_id stored as TEXT to match restaurant_id string)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,10 +97,11 @@ def init_db():
     )
     """)
 
-    # Restaurants table
+    # Restaurants table: integer internal id + external string restaurant_id
     cur.execute("""
     CREATE TABLE IF NOT EXISTS restaurants (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        restaurant_id TEXT UNIQUE,
         name TEXT UNIQUE,
         fee_per_package REAL DEFAULT 5.0,
         address TEXT,
@@ -140,6 +147,45 @@ def init_db():
     """)
 
     conn.commit()
+
+    # Backfill / migration for older DBs: ensure columns exist
+    # users.restaurant_id already in CREATE above; if older DB lacks it we try to add
+    try:
+        if not column_exists(conn, 'users', 'restaurant_id'):
+            cur.execute("ALTER TABLE users ADD COLUMN restaurant_id TEXT")
+            conn.commit()
+    except Exception:
+        # ignore if cannot alter
+        pass
+
+    try:
+        if not column_exists(conn, 'orders', 'vendor_id'):
+            cur.execute("ALTER TABLE orders ADD COLUMN vendor_id TEXT")
+            conn.commit()
+    except Exception:
+        pass
+
+    try:
+        if not column_exists(conn, 'restaurants', 'restaurant_id'):
+            cur.execute("ALTER TABLE restaurants ADD COLUMN restaurant_id TEXT")
+            conn.commit()
+    except Exception:
+        pass
+
+    try:
+        if not column_exists(conn, 'courier_performance', 'cooldown_until'):
+            cur.execute("ALTER TABLE courier_performance ADD COLUMN cooldown_until TEXT")
+            conn.commit()
+    except Exception:
+        pass
+
+    try:
+        if not column_exists(conn, 'courier_performance', 'current_neighborhood_id'):
+            cur.execute("ALTER TABLE courier_performance ADD COLUMN current_neighborhood_id INTEGER")
+            conn.commit()
+    except Exception:
+        pass
+
     conn.close()
 
 # ---------------- Günlük Kurye Performans Sıfırlama ----------------
@@ -487,7 +533,7 @@ def assign_order_to_courier(order_id):
 
                     return True
 
-    # İkinci öncelik: Aynı mahalledeki son 5 dakika içindeki siparişleri bul
+    # İkinci öncelik: Aynı mahallede son 5 dakika içindeki siparişleri bul
     five_min_ago = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
 
     if neighborhood_id:
@@ -600,7 +646,7 @@ def auth_register():
     Body: { username, password, role (admin|courier|restaurant), first_name, last_name, email, phone, restaurant_id (for restaurant role) }
     - courier: anyone can self-register
     - admin: if no admin exists, allowed; if admin exists, only existing admin (via Bearer token) can create new admin
-    - restaurant: requires restaurant_id to link to existing restaurant
+    - restaurant: requires restaurant_id to link to existing restaurant (restaurant_id is STRING provided by admin when creating restaurant)
     Returns created user summary (not including password hash)
     """
     data = request.get_json() or {}
@@ -629,15 +675,15 @@ def auth_register():
             except Exception:
                 return jsonify({"message": "Token geçersiz"}), 401
 
-    # If restaurant role, check if restaurant_id is provided and valid
+    # If restaurant role, check if restaurant_id is provided and valid (restaurant_id is string)
     restaurant_id = None
     if role == "restaurant":
         restaurant_id = data.get("restaurant_id")
         if not restaurant_id:
             return jsonify({"message": "Restoran kullanıcısı için restaurant_id gerekli"}), 400
         
-        # Check if restaurant exists
-        result = execute_with_retry("SELECT 1 FROM restaurants WHERE id = ?", (restaurant_id,))
+        # Check if restaurant exists by restaurant_id (string)
+        result = execute_with_retry("SELECT 1 FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
         if not result or len(result) == 0:
             return jsonify({"message": "Geçersiz restaurant_id"}), 400
 
@@ -844,7 +890,7 @@ def me():
     elif user["role"] == "restaurant":
         restaurant_id = user.get("restaurant_id")
         if restaurant_id:
-            result = execute_with_retry("SELECT * FROM restaurants WHERE id = ?", (restaurant_id,))
+            result = execute_with_retry("SELECT * FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
             if result and len(result) > 0:
                 user["restaurant"] = row_to_dict(result[0])
 
@@ -1088,7 +1134,7 @@ def courier_delivery_history(courier_id):
 @app.route("/restaurants/orders", methods=["GET"])
 @restaurant_required
 def restaurant_get_orders():
-    """Restoranın siparişlerini getir"""
+    """Restoranın siparişlerini getir (restaurant_id string ile eşleşir)"""
     restaurant_id = None
     result = execute_with_retry("SELECT restaurant_id FROM users WHERE id = ?", (request.user_id,))
     if result and len(result) > 0:
@@ -1097,14 +1143,14 @@ def restaurant_get_orders():
     if not restaurant_id:
         return jsonify({"message": "Restoran ID bulunamadı"}), 404
     
-    # Restoran bilgilerini al
-    result = execute_with_retry("SELECT name FROM restaurants WHERE id = ?", (restaurant_id,))
+    # Restoran bilgilerini al (restaurant_id ile)
+    result = execute_with_retry("SELECT name FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
     if not result or len(result) == 0:
         return jsonify({"message": "Restoran bulunamadı"}), 404
     
     restaurant_name = result[0]["name"]
     
-    # Restoranın siparişlerini getir
+    # Restoranın siparişlerini getir (orders.vendor_id eşleşmesi string restaurant_id ile yapılır)
     result = execute_with_retry("""
         SELECT * FROM orders 
         WHERE vendor_id = ? OR customer_name LIKE ? 
@@ -1116,7 +1162,7 @@ def restaurant_get_orders():
 @app.route("/restaurants/orders/<int:order_id>", methods=["GET"])
 @restaurant_required
 def restaurant_get_order(order_id):
-    """Belirli bir siparişin detaylarını getir"""
+    """Belirli bir siparişin detaylarını getir (restaurant_id string ile kontrol yapılır)"""
     restaurant_id = None
     result = execute_with_retry("SELECT restaurant_id FROM users WHERE id = ?", (request.user_id,))
     if result and len(result) > 0:
@@ -1126,13 +1172,13 @@ def restaurant_get_order(order_id):
         return jsonify({"message": "Restoran ID bulunamadı"}), 404
     
     # Restoran bilgilerini al
-    result = execute_with_retry("SELECT name FROM restaurants WHERE id = ?", (restaurant_id,))
+    result = execute_with_retry("SELECT name FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
     if not result or len(result) == 0:
         return jsonify({"message": "Restoran bulunamadı"}), 404
     
     restaurant_name = result[0]["name"]
     
-    # Siparişi getir
+    # Siparişi getir (vendor_id ile eşleşme)
     result = execute_with_retry("""
         SELECT * FROM orders 
         WHERE id = ? AND (vendor_id = ? OR customer_name LIKE ?)
@@ -1149,6 +1195,8 @@ def webhook_yemeksepeti():
     data = request.get_json() or {}
     external_id = data.get("external_id") or data.get("order_id") or data.get("id")
     vendor_id = data.get("vendor_id")
+    # normalize vendor_id to string for consistency
+    vendor_id = None if vendor_id is None else str(vendor_id)
     customer_name = data.get("customer_name") or data.get("customer")
     items = data.get("items")
     total = data.get("total") or data.get("total_amount") or 0
@@ -1198,11 +1246,12 @@ def admin_list_orders():
 @admin_required
 def admin_patch_order(order_id):
     data = request.get_json() or {}
-    allowed = ("status", "courier_id", "customer_name", "items", "total_amount", "address")
+    allowed = ("status", "courier_id", "customer_name", "items", "total_amount", "address", "vendor_id")
     fields = [];
     values = []
     for k in allowed:
         if k in data:
+            # vendor_id may be string
             fields.append(f"{k} = ?");
             values.append(data[k])
     if not fields:
@@ -1235,24 +1284,28 @@ def list_restaurants():
 @admin_required
 def create_restaurant():
     data = request.get_json() or {}
+    restaurant_id = data.get("restaurant_id")  # string external id
     name = data.get("name")
     fee_per_package = data.get("fee_per_package", 5.0)
     address = data.get("address", "")
     phone = data.get("phone", "")
+    is_active = data.get("is_active", 1)
 
+    if not restaurant_id:
+        return jsonify({"message": "restaurant_id (string) gereklidir"}), 400
     if not name:
         return jsonify({"message": "Restoran adı gereklidir"}), 400
 
     try:
         execute_write_with_retry(
             """INSERT INTO restaurants 
-               (name, fee_per_package, address, phone, created_at) 
-               VALUES (?, ?, ?, ?, ?)""",
-            (name, fee_per_package, address, phone, datetime.utcnow().isoformat())
+               (restaurant_id, name, fee_per_package, address, phone, is_active, created_at) 
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (str(restaurant_id), name, fee_per_package, address, phone, is_active, datetime.utcnow().isoformat())
         )
 
         # Get created restaurant
-        result = execute_with_retry("SELECT * FROM restaurants WHERE name = ?", (name,))
+        result = execute_with_retry("SELECT * FROM restaurants WHERE restaurant_id = ?", (str(restaurant_id),))
         if result and len(result) > 0:
             restaurant = row_to_dict(result[0])
         else:
@@ -1260,14 +1313,14 @@ def create_restaurant():
 
         return jsonify({"message": "Restoran oluşturuldu", "restaurant": restaurant}), 201
 
-    except sqlite3.IntegrityError:
-        return jsonify({"message": "Bu isimde bir restoran zaten var"}), 400
+    except sqlite3.IntegrityError as e:
+        return jsonify({"message": "Bu restaurant_id veya isim zaten var", "error": str(e)}), 400
 
-@app.route("/restaurants/<int:restaurant_id>", methods=["PATCH"])
+@app.route("/restaurants/<restaurant_id>", methods=["PATCH"])
 @admin_required
 def update_restaurant(restaurant_id):
     data = request.get_json() or {}
-    allowed = ("name", "fee_per_package", "address", "phone", "is_active")
+    allowed = ("restaurant_id", "name", "fee_per_package", "address", "phone", "is_active")
     fields = [];
     values = []
     for k in allowed:
@@ -1278,18 +1331,18 @@ def update_restaurant(restaurant_id):
         return jsonify({"message": "Güncellenecek alan yok"}), 400
 
     values.append(restaurant_id)
-    query = f"UPDATE restaurants SET {', '.join(fields)} WHERE id = ?"
+    query = f"UPDATE restaurants SET {', '.join(fields)} WHERE restaurant_id = ?"
 
     try:
         execute_write_with_retry(query, values)
         return jsonify({"message": "Restoran güncellendi"})
-    except sqlite3.IntegrityError:
-        return jsonify({"message": "Bu isimde bir restoran zaten var"}), 400
+    except sqlite3.IntegrityError as e:
+        return jsonify({"message": "Integrity error", "error": str(e)}), 400
 
-@app.route("/restaurants/<int:restaurant_id>", methods=["DELETE"])
+@app.route("/restaurants/<restaurant_id>", methods=["DELETE"])
 @admin_required
 def delete_restaurant(restaurant_id):
-    execute_write_with_retry("DELETE FROM restaurants WHERE id = ?", (restaurant_id,))
+    execute_write_with_retry("DELETE FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
     return jsonify({"message": "Restoran silindi"})
 
 # ---------------- Neighborhood Management (admin) ----------------
@@ -1399,7 +1452,7 @@ def admin_reports_orders():
                     name = "Bilinmeyen Kurye"
             perf.append({"courier_id": courier_id, "courier_name": name, "delivered_orders": cnt})
 
-    # Restaurant performance
+    # Restaurant performance (vendor_id is string -> match restaurants.restaurant_id)
     result = execute_with_retry("""
         SELECT vendor_id, COUNT(*) as order_count FROM orders
         WHERE created_at >= ? AND created_at < ? GROUP BY vendor_id
@@ -1411,7 +1464,7 @@ def admin_reports_orders():
             vendor_id = row[0]
             cnt = row[1]
             if vendor_id:
-                r = execute_with_retry("SELECT name FROM restaurants WHERE id = ?", (vendor_id,))
+                r = execute_with_retry("SELECT name FROM restaurants WHERE restaurant_id = ?", (vendor_id,))
                 if r and len(r) > 0:
                     name = r[0]['name']
                 else:
