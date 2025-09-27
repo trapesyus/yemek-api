@@ -148,14 +148,12 @@ def init_db():
 
     conn.commit()
 
-    # Backfill / migration for older DBs: ensure columns exist
-    # users.restaurant_id already in CREATE above; if older DB lacks it we try to add
+    # Backfill / migration for older DBs: ensure columns exist (best-effort)
     try:
         if not column_exists(conn, 'users', 'restaurant_id'):
             cur.execute("ALTER TABLE users ADD COLUMN restaurant_id TEXT")
             conn.commit()
     except Exception:
-        # ignore if cannot alter
         pass
 
     try:
@@ -643,10 +641,10 @@ def assign_order_to_courier(order_id):
 @app.route("/auth/register", methods=["POST"])
 def auth_register():
     """
-    Body: { username, password, role (admin|courier|restaurant), first_name, last_name, email, phone, restaurant_id (for restaurant role) }
+    Body: { username, password, role (admin|courier|restaurant), first_name, last_name, email, phone, restaurant_id (for restaurant role), restaurant_name/address/phone optional for self-creating restaurant }
     - courier: anyone can self-register
     - admin: if no admin exists, allowed; if admin exists, only existing admin (via Bearer token) can create new admin
-    - restaurant: requires restaurant_id to link to existing restaurant (restaurant_id is STRING provided by admin when creating restaurant)
+    - restaurant: restaurant user can register even if admin hasn't created that restaurant_id; in that case system will create restaurants row automatically using provided restaurant_name/address/phone (optional)
     Returns created user summary (not including password hash)
     """
     data = request.get_json() or {}
@@ -675,17 +673,29 @@ def auth_register():
             except Exception:
                 return jsonify({"message": "Token geçersiz"}), 401
 
-    # If restaurant role, check if restaurant_id is provided and valid (restaurant_id is string)
+    # If restaurant role, process restaurant_id (string)
     restaurant_id = None
     if role == "restaurant":
         restaurant_id = data.get("restaurant_id")
         if not restaurant_id:
             return jsonify({"message": "Restoran kullanıcısı için restaurant_id gerekli"}), 400
-        
-        # Check if restaurant exists by restaurant_id (string)
-        result = execute_with_retry("SELECT 1 FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
-        if not result or len(result) == 0:
-            return jsonify({"message": "Geçersiz restaurant_id"}), 400
+        restaurant_id = str(restaurant_id)
+
+        # Check if restaurant exists; if not, create it (self-service flow)
+        r = execute_with_retry("SELECT id FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
+        if not r or len(r) == 0:
+            # create restaurant record using optional supplied fields (name/address/phone) or fallback name
+            restaurant_name = data.get("restaurant_name") or f"Unnamed {restaurant_id}"
+            address = data.get("address") or ""
+            phone = data.get("phone") or ""
+            fee = data.get("fee_per_package", 5.0)
+            try:
+                execute_write_with_retry(
+                    "INSERT INTO restaurants (restaurant_id, name, fee_per_package, address, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (restaurant_id, restaurant_name, fee, address, phone, datetime.utcnow().isoformat())
+                )
+            except sqlite3.IntegrityError as e:
+                return jsonify({"message": "Restaurant oluşturulurken hata (muhtemel duplicate)", "error": str(e)}), 400
 
     hashed = hash_password(password)
     try:
@@ -1219,11 +1229,10 @@ def webhook_yemeksepeti():
         if result and len(result) > 0:
             order_id = result[0]["id"]
 
-            # Siparişi kuryeye ata (async olarak çalıştırılabilir)
+            # Siparişi kuryeye ata (try/except ile; atama hatası ana işlemi etkilemesin)
             try:
                 assign_order_to_courier(order_id)
             except Exception as e:
-                # Atama hatası ana işlemi etkilemesin, sadece loglayalım
                 print(f"Sipariş atama hatası: {e}")
 
         return jsonify({"message": "Sipariş alındı", "order_uuid": order_uuid}), 201
@@ -1284,7 +1293,7 @@ def list_restaurants():
 @admin_required
 def create_restaurant():
     data = request.get_json() or {}
-    restaurant_id = data.get("restaurant_id")  # string external id
+    restaurant_id = data.get("restaurant_id")  # string external id (admin-provided)
     name = data.get("name")
     fee_per_package = data.get("fee_per_package", 5.0)
     address = data.get("address", "")
@@ -1296,16 +1305,23 @@ def create_restaurant():
     if not name:
         return jsonify({"message": "Restoran adı gereklidir"}), 400
 
+    restaurant_id = str(restaurant_id)
+
+    # check uniqueness: restaurant_id or name must not exist
+    r = execute_with_retry("SELECT 1 FROM restaurants WHERE restaurant_id = ? OR name = ?", (restaurant_id, name))
+    if r and len(r) > 0:
+        return jsonify({"message": "Bu restaurant_id veya isim zaten kullanılıyor"}), 400
+
     try:
         execute_write_with_retry(
             """INSERT INTO restaurants 
                (restaurant_id, name, fee_per_package, address, phone, is_active, created_at) 
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (str(restaurant_id), name, fee_per_package, address, phone, is_active, datetime.utcnow().isoformat())
+            (restaurant_id, name, fee_per_package, address, phone, is_active, datetime.utcnow().isoformat())
         )
 
         # Get created restaurant
-        result = execute_with_retry("SELECT * FROM restaurants WHERE restaurant_id = ?", (str(restaurant_id),))
+        result = execute_with_retry("SELECT * FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
         if result and len(result) > 0:
             restaurant = row_to_dict(result[0])
         else:
