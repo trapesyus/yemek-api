@@ -8,6 +8,7 @@ import jwt
 import re
 import time
 import json
+import traceback
 from functools import wraps
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -1211,34 +1212,58 @@ def webhook_yemeksepeti():
     items = data.get("items")
     total = data.get("total") or data.get("total_amount") or 0
     address = data.get("address") or data.get("customer_address")
-    payload = str(data)
+    # use json.dumps to keep valid json string (and preserve unicode)
+    payload = json.dumps(data, ensure_ascii=False)
     created = datetime.utcnow().isoformat()
     order_uuid = f"o-{int(datetime.utcnow().timestamp() * 1000)}"
 
+    # 1) INSERT işlemi (hataları yakala)
     try:
-        # Siparişi kaydet
-        execute_write_with_retry(
+        ok = execute_write_with_retry(
             """INSERT INTO orders
                (order_uuid, external_id, vendor_id, customer_name, items, total_amount, address, payload, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (order_uuid, external_id, vendor_id, customer_name, str(items), total, address, payload, created, created)
         )
+    except sqlite3.IntegrityError as ie:
+        # duplicate veya constraint hatası
+        print("WEBHOOK INSERT IntegrityError:", ie)
+        traceback.print_exc()
+        return jsonify({"message": "Sipariş kaydedilirken hata (duplicate veya integrity)", "error": str(ie)}), 400
+    except Exception as e:
+        print("WEBHOOK INSERT HATA:", e)
+        traceback.print_exc()
+        return jsonify({"message": "Sunucu hatası (insert sırasında)", "error": str(e)}), 500
 
-        # Yeni siparişin ID'sini al
+    if not ok:
+        # execute_write_with_retry başarısız oldu (örn. OperationalError yakalandı ve False döndü)
+        print("WEBHOOK: INSERT başarısız (ok == False)")
+        return jsonify({"message": "Sunucu hatası (insert başarısız)"}), 500
+
+    # 2) INSERT sonrası kesin kontrol: satırı oku
+    try:
         result = execute_with_retry("SELECT id FROM orders WHERE order_uuid = ?", (order_uuid,))
-        if result and len(result) > 0:
-            order_id = result[0]["id"]
+    except Exception as e:
+        print("WEBHOOK SELECT HATASI:", e)
+        traceback.print_exc()
+        return jsonify({"message": "Sunucu hatası (insert doğrulama sırasında)", "error": str(e)}), 500
 
-            # Siparişi kuryeye ata (try/except ile; atama hatası ana işlemi etkilemesin)
-            try:
-                assign_order_to_courier(order_id)
-            except Exception as e:
-                print(f"Sipariş atama hatası: {e}")
+    if not result or len(result) == 0:
+        print("WEBHOOK: INSERT sonrası order bulunamadı, order_uuid:", order_uuid)
+        return jsonify({"message": "Sunucu hatası (kaydedilemedi)"}), 500
 
-        return jsonify({"message": "Sipariş alındı", "order_uuid": order_uuid}), 201
+    order_id = result[0]["id"]
 
-    except sqlite3.IntegrityError:
-        return jsonify({"message": "Sipariş kaydedilirken hata (duplicate veya integrity)"}), 400
+    # 3) Siparişi kuryeye ata - burada çıkabilecek hataları yakala ama client'a 201 dön
+    try:
+        assign_order_to_courier(order_id)
+    except Exception as e:
+        print(f"Sipariş atama hatası (order_id={order_id}): {e}")
+        traceback.print_exc()
+        # isteğe bağlı: burada delivery_history'ye hata kaydı yazılabilir
+
+    # 4) Başarılı cevap gönder
+    return jsonify({"message": "Sipariş alındı", "order_uuid": order_uuid}), 201
 
 @app.route("/orders", methods=["GET"])
 @admin_required
