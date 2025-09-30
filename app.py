@@ -77,13 +77,14 @@ def init_db():
     )
     """)
 
-    # Orders table (vendor_id stored as TEXT to match restaurant_id string)
+    # Orders table (vendor_id and vendor_name stored as TEXT to match restaurant_id/string)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         order_uuid TEXT UNIQUE,
         external_id TEXT,
         vendor_id TEXT,
+        vendor_name TEXT,
         customer_name TEXT,
         items TEXT,
         total_amount REAL,
@@ -160,6 +161,13 @@ def init_db():
     try:
         if not column_exists(conn, 'orders', 'vendor_id'):
             cur.execute("ALTER TABLE orders ADD COLUMN vendor_id TEXT")
+            conn.commit()
+    except Exception:
+        pass
+
+    try:
+        if not column_exists(conn, 'orders', 'vendor_name'):
+            cur.execute("ALTER TABLE orders ADD COLUMN vendor_name TEXT")
             conn.commit()
     except Exception:
         pass
@@ -1162,11 +1170,12 @@ def restaurant_get_orders():
     restaurant_name = result[0]["name"]
     
     # Restoranın siparişlerini getir (orders.vendor_id eşleşmesi string restaurant_id ile yapılır)
+    # Ayrıca vendor_name ile doğrudan eşleşme kontrolü ekledik
     result = execute_with_retry("""
         SELECT * FROM orders 
-        WHERE vendor_id = ? OR customer_name LIKE ? 
+        WHERE vendor_id = ? OR vendor_name = ? OR customer_name LIKE ? 
         ORDER BY created_at DESC
-    """, (restaurant_id, f"%{restaurant_name}%"))
+    """, (restaurant_id, restaurant_name, f"%{restaurant_name}%"))
     
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
 
@@ -1189,11 +1198,11 @@ def restaurant_get_order(order_id):
     
     restaurant_name = result[0]["name"]
     
-    # Siparişi getir (vendor_id ile eşleşme)
+    # Siparişi getir (vendor_id veya vendor_name ile eşleşme)
     result = execute_with_retry("""
         SELECT * FROM orders 
-        WHERE id = ? AND (vendor_id = ? OR customer_name LIKE ?)
-    """, (order_id, restaurant_id, f"%{restaurant_name}%"))
+        WHERE id = ? AND (vendor_id = ? OR vendor_name = ? OR customer_name LIKE ?)
+    """, (order_id, restaurant_id, restaurant_name, f"%{restaurant_name}%"))
     
     if not result or len(result) == 0:
         return jsonify({"message": "Sipariş bulunamadı"}), 404
@@ -1208,6 +1217,11 @@ def webhook_yemeksepeti():
     vendor_id = data.get("vendor_id")
     # normalize vendor_id to string for consistency
     vendor_id = None if vendor_id is None else str(vendor_id)
+
+    # vendor_name / restaurant_name parametreleri (yemeksepeti payload'ına göre esnek alıyoruz)
+    vendor_name = data.get("vendor_name") or data.get("restaurant_name") or data.get("vendor") or data.get("merchant_name")
+    vendor_name = None if vendor_name is None else str(vendor_name)
+
     customer_name = data.get("customer_name") or data.get("customer")
     items = data.get("items")
     total = data.get("total") or data.get("total_amount") or 0
@@ -1221,9 +1235,9 @@ def webhook_yemeksepeti():
     try:
         ok = execute_write_with_retry(
             """INSERT INTO orders
-               (order_uuid, external_id, vendor_id, customer_name, items, total_amount, address, payload, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (order_uuid, external_id, vendor_id, customer_name, str(items), total, address, payload, created, created)
+               (order_uuid, external_id, vendor_id, vendor_name, customer_name, items, total_amount, address, payload, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (order_uuid, external_id, vendor_id, vendor_name, customer_name, str(items), total, address, payload, created, created)
         )
     except sqlite3.IntegrityError as ie:
         # duplicate veya constraint hatası
@@ -1280,12 +1294,12 @@ def admin_list_orders():
 @admin_required
 def admin_patch_order(order_id):
     data = request.get_json() or {}
-    allowed = ("status", "courier_id", "customer_name", "items", "total_amount", "address", "vendor_id")
+    allowed = ("status", "courier_id", "customer_name", "items", "total_amount", "address", "vendor_id", "vendor_name")
     fields = [];
     values = []
     for k in allowed:
         if k in data:
-            # vendor_id may be string
+            # vendor_id/vendor_name may be string
             fields.append(f"{k} = ?");
             values.append(data[k])
     if not fields:
