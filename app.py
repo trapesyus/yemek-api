@@ -927,6 +927,158 @@ def me():
 
     return jsonify(user)
 
+# ---------------- Admin Courier Reassignment ----------------
+@app.route("/admin/orders/<int:order_id>/reassign", methods=["POST"])
+@admin_required
+def admin_reassign_order(order_id):
+    """
+    Admin endpoint to reassign an order to a different courier
+    Body: { "new_courier_id": int }
+    """
+    data = request.get_json() or {}
+    new_courier_id = data.get("new_courier_id")
+    
+    if not new_courier_id:
+        return jsonify({"message": "new_courier_id gereklidir"}), 400
+
+    # Get the current order details
+    result = execute_with_retry("""
+        SELECT o.*, c.id as current_courier_id, c.status as courier_status 
+        FROM orders o 
+        LEFT JOIN couriers c ON o.courier_id = c.id 
+        WHERE o.id = ?
+    """, (order_id,))
+    
+    if not result or len(result) == 0:
+        return jsonify({"message": "Sipariş bulunamadı"}), 404
+
+    order = result[0]
+    current_courier_id = order["current_courier_id"]
+
+    # Check if new courier exists and is available
+    new_courier_result = execute_with_retry("""
+        SELECT id, status, first_name, last_name 
+        FROM couriers 
+        WHERE id = ? AND status IN ('boşta', 'teslimatta')
+    """, (new_courier_id,))
+    
+    if not new_courier_result or len(new_courier_result) == 0:
+        return jsonify({"message": "Yeni kurye bulunamadı veya müsait değil"}), 404
+
+    new_courier = new_courier_result[0]
+
+    # Validate order can be reassigned
+    if order["status"] not in ["yeni", "teslim alındı"]:
+        return jsonify({"message": "Sadece 'yeni' veya 'teslim alındı' durumundaki siparişler yeniden atanabilir"}), 400
+
+    if current_courier_id == new_courier_id:
+        return jsonify({"message": "Sipariş zaten bu kuryede"}), 400
+
+    now = datetime.utcnow().isoformat()
+    
+    try:
+        # 1. Update the previous courier's status if needed
+        if current_courier_id:
+            # Check if previous courier has other active orders
+            other_orders_result = execute_with_retry("""
+                SELECT COUNT(*) as active_count 
+                FROM orders 
+                WHERE courier_id = ? AND status IN ('yeni', 'teslim alındı') AND id != ?
+            """, (current_courier_id, order_id))
+            
+            if other_orders_result and other_orders_result[0]["active_count"] == 0:
+                # No other active orders, set status to 'boşta'
+                execute_write_with_retry(
+                    "UPDATE couriers SET status = 'boşta' WHERE id = ?",
+                    (current_courier_id,)
+                )
+            
+            # Clear cooldown for previous courier
+            execute_write_with_retry(
+                "UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?",
+                (current_courier_id,)
+            )
+
+            # Notify previous courier about reassignment
+            notify_courier_reassignment(current_courier_id, order_id, "removed")
+
+        # 2. Assign to new courier
+        execute_write_with_retry(
+            "UPDATE orders SET courier_id = ?, status = 'teslim alındı', updated_at = ? WHERE id = ?",
+            (new_courier_id, now, order_id)
+        )
+
+        # 3. Update new courier status
+        execute_write_with_retry(
+            "UPDATE couriers SET status = 'teslimatta' WHERE id = ?",
+            (new_courier_id,)
+        )
+
+        # 4. Ensure performance record exists and update
+        ensure_courier_performance(new_courier_id)
+        
+        # 5. Set cooldown for new courier if neighborhood exists
+        if order.get("neighborhood_id"):
+            set_courier_cooldown(new_courier_id, order["neighborhood_id"])
+
+        # 6. Add to delivery history
+        execute_write_with_retry(
+            "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+            (order_id, new_courier_id, 'reassigned', 
+             f'Sipariş {current_courier_id} numaralı kuryeden {new_courier_id} numaralı kuryeye yeniden atandı', 
+             now)
+        )
+
+        # 7. Notify new courier
+        order_result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
+        if order_result and len(order_result) > 0:
+            order_data = row_to_dict(order_result[0])
+            notification_data = {
+                'order_id': order_data['id'],
+                'order_uuid': order_data['order_uuid'],
+                'customer_name': order_data['customer_name'],
+                'address': order_data['address'],
+                'total_amount': order_data['total_amount'],
+                'items': order_data['items'],
+                'reassigned': True,
+                'previous_courier_id': current_courier_id
+            }
+            notify_courier_new_order(new_courier_id, notification_data)
+
+        return jsonify({
+            "message": f"Sipariş {new_courier['first_name']} {new_courier['last_name']} kuryesine atandı",
+            "previous_courier_id": current_courier_id,
+            "new_courier_id": new_courier_id,
+            "new_courier_name": f"{new_courier['first_name']} {new_courier['last_name']}"
+        })
+
+    except Exception as e:
+        print(f"Sipariş yeniden atama hatası: {e}")
+        traceback.print_exc()
+        return jsonify({"message": "Sipariş yeniden atanırken hata oluştu", "error": str(e)}), 500
+
+def notify_courier_reassignment(courier_id, order_id, action):
+    """
+    Notify a courier that an order has been reassigned from them
+    """
+    try:
+        courier_id = str(courier_id)
+        if courier_id in courier_connections:
+            notification_data = {
+                'order_id': order_id,
+                'action': action,  # 'removed'
+                'message': 'Bir sipariş size yeniden atandı' if action == 'removed' else 'Yeni sipariş atandı'
+            }
+            socketio.emit('order_reassigned', notification_data, room=f'courier_{courier_id}')
+            print(f"Reassignment notification sent to courier {courier_id}: {notification_data}")
+            return True
+        else:
+            print(f"Courier {courier_id} is not connected for reassignment notification")
+            return False
+    except Exception as e:
+        print(f"Reassignment bildirim gönderme hatası: {e}")
+        return False
+
 # ---------------- Users management (admin) ----------------
 @app.route("/users", methods=["GET"])
 @admin_required
