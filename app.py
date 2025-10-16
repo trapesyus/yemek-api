@@ -9,6 +9,9 @@ import re
 import time
 import json
 import traceback
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from functools import wraps
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -27,6 +30,17 @@ courier_connections = {}
 
 # Günlük kurye performans sıfırlama için zamanlayıcı
 scheduler = BackgroundScheduler()
+
+# Email konfigürasyonu (environment variables'dan alınması önerilir)
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+EMAIL_USERNAME = "your_email@gmail.com"  # Gerçek email adresinizle değiştirin
+EMAIL_PASSWORD = "your_app_password"     # Gmail App Password ile değiştirin
+
+# Rapor alıcıları
+REPORT_RECIPIENTS = {
+    "email": ["admin@firma.com", "rapor@firma.com"]  # Email adreslerinizle değiştirin
+}
 
 # ---------------- DB ----------------
 def get_conn():
@@ -200,9 +214,365 @@ def reset_daily_orders():
     except Exception as e:
         print(f"Günlük sıfırlama hatası: {e}")
 
-# Zamanlayıcıyı başlat (her gün gece yarısı çalıştır)
-scheduler.add_job(reset_daily_orders, 'cron', hour=0, minute=0)
+# ---------------- Aylık Kurye Performans Sıfırlama ----------------
+def reset_monthly_orders():
+    """Her ayın başında kuryelerin aylık sipariş sayılarını sıfırla"""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE courier_performance SET daily_orders = 0, total_orders = 0")
+        conn.commit()
+        conn.close()
+        print("Aylık kurye sipariş sayıları sıfırlandı")
+    except Exception as e:
+        print(f"Aylık sıfırlama hatası: {e}")
+
+# ---------------- Email Gönderme Fonksiyonu ----------------
+def send_email(to_email, subject, html_content):
+    """Email gönderir"""
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = EMAIL_USERNAME
+        msg['To'] = to_email
+        
+        # HTML içeriği ekle
+        html_part = MIMEText(html_content, 'html')
+        msg.attach(html_part)
+        
+        # SMTP bağlantısı
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        
+        print(f"Email gönderildi: {to_email}")
+        return True
+        
+    except Exception as e:
+        print(f"Email gönderme hatası ({to_email}): {e}")
+        return False
+
+# ---------------- Aylık Rapor Fonksiyonları ----------------
+def generate_monthly_report():
+    """Aylık rapor verilerini oluşturur"""
+    try:
+        # Önceki ayın başlangıç ve bitiş tarihleri
+        today = datetime.utcnow()
+        first_day_of_month = today.replace(day=1)
+        last_day_of_previous_month = first_day_of_month - timedelta(days=1)
+        first_day_of_previous_month = last_day_of_previous_month.replace(day=1)
+        
+        start_date = first_day_of_previous_month.strftime("%Y-%m-%d")
+        end_date = last_day_of_previous_month.strftime("%Y-%m-%d")
+        
+        print(f"Aylık rapor oluşturuluyor: {start_date} - {end_date}")
+        
+        # Status counts
+        result = execute_with_retry("""
+            SELECT status, COUNT(*) as cnt FROM orders
+            WHERE created_at >= ? AND created_at < ? GROUP BY status
+        """, (start_date, f"{end_date} 23:59:59"))
+
+        status_counts = {row["status"]: row["cnt"] for row in result} if result else {}
+
+        # Courier performance
+        result = execute_with_retry("""
+            SELECT courier_id, COUNT(*) as delivered_count FROM orders
+            WHERE created_at >= ? AND created_at < ? AND status = 'teslim edildi' GROUP BY courier_id
+        """, (start_date, f"{end_date} 23:59:59"))
+
+        perf = []
+        if result:
+            for row in result:
+                courier_id = row["courier_id"]
+                cnt = row["delivered_count"]
+                if not courier_id:
+                    name = "Atanmamış"
+                else:
+                    r = execute_with_retry("SELECT first_name, last_name FROM couriers WHERE id = ?", (courier_id,))
+                    if r and len(r) > 0:
+                        r_dict = row_to_dict(r[0])
+                        name = f"{r_dict['first_name']} {r_dict['last_name']}"
+                    else:
+                        name = "Bilinmeyen Kurye"
+                perf.append({"courier_id": courier_id, "courier_name": name, "delivered_orders": cnt})
+
+        # Restaurant performance (vendor_id is string -> match restaurants.restaurant_id)
+        result = execute_with_retry("""
+            SELECT vendor_id, COUNT(*) as order_count FROM orders
+            WHERE created_at >= ? AND created_at < ? GROUP BY vendor_id
+        """, (start_date, f"{end_date} 23:59:59"))
+
+        rest_perf = []
+        if result:
+            for row in result:
+                vendor_id = row["vendor_id"]
+                cnt = row["order_count"]
+                if vendor_id:
+                    r = execute_with_retry("SELECT name FROM restaurants WHERE restaurant_id = ?", (vendor_id,))
+                    if r and len(r) > 0:
+                        name = row_to_dict(r[0])['name']
+                    else:
+                        name = "Bilinmeyen Restoran"
+                else:
+                    name = "Bilinmeyen Restoran"
+                rest_perf.append({"vendor_id": vendor_id, "restaurant_name": name, "order_count": cnt})
+
+        # Courier distribution
+        result = execute_with_retry("""
+            SELECT c.id, c.first_name, c.last_name, COALESCE(cp.daily_orders, 0) as daily_orders
+            FROM couriers c
+            LEFT JOIN courier_performance cp ON c.id = cp.courier_id
+            ORDER BY daily_orders DESC
+        """)
+
+        courier_dist = []
+        if result:
+            for row in result:
+                row_dict = row_to_dict(row)
+                courier_dist.append({
+                    "courier_id": row_dict["id"],
+                    "courier_name": f"{row_dict['first_name']} {row_dict['last_name']}",
+                    "daily_orders": row_dict["daily_orders"]
+                })
+
+        # Neighborhood distribution
+        result = execute_with_retry("""
+            SELECT n.name, COUNT(o.id) as order_count
+            FROM neighborhoods n
+            LEFT JOIN orders o ON n.id = o.neighborhood_id
+            GROUP BY n.id
+            ORDER BY order_count DESC
+        """)
+
+        neighborhood_dist = []
+        if result:
+            for row in result:
+                row_dict = row_to_dict(row)
+                neighborhood_dist.append({
+                    "neighborhood_name": row_dict["name"],
+                    "order_count": row_dict["order_count"]
+                })
+
+        return {
+            'success': True,
+            'period': {'start': start_date, 'end': end_date},
+            'status_counts': status_counts,
+            'courier_performance': perf,
+            'restaurant_performance': rest_perf,
+            'courier_distribution': courier_dist,
+            'neighborhood_distribution': neighborhood_dist
+        }
+        
+    except Exception as e:
+        print(f"Rapor oluşturma hatası: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+def format_report_for_email(report_data):
+    """Raporu email formatında formatlar"""
+    try:
+        if not report_data.get('success'):
+            return f"Rapor oluşturulamadı: {report_data.get('error', 'Bilinmeyen hata')}", "Hata"
+        
+        data = report_data
+        period = data['period']
+        start_date = period['start']
+        end_date = period['end']
+        
+        subject = f"Aylık Rapor - {start_date} - {end_date}"
+        
+        # HTML içerik oluştur
+        html_content = f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                .header {{ background-color: #f8f9fa; padding: 20px; border-radius: 5px; }}
+                .section {{ margin: 20px 0; }}
+                .section-title {{ color: #333; border-bottom: 2px solid #007bff; padding-bottom: 5px; }}
+                table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
+                th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}
+                th {{ background-color: #f2f2f2; }}
+                .success {{ color: green; }}
+                .warning {{ color: orange; }}
+                .error {{ color: red; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>📊 Aylık Rapor</h1>
+                <p><strong>Dönem:</strong> {start_date} - {end_date}</p>
+                <p><strong>Oluşturulma Tarihi:</strong> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</p>
+            </div>
+        """
+        
+        # Sipariş durumları
+        status_counts = data.get('status_counts', {})
+        total_orders = sum(status_counts.values())
+        
+        html_content += f"""
+            <div class="section">
+                <h2 class="section-title">📦 Sipariş Durumları</h2>
+                <p><strong>Toplam Sipariş:</strong> {total_orders}</p>
+                <table>
+                    <tr><th>Durum</th><th>Sayı</th><th>Yüzde</th></tr>
+        """
+        
+        for status, count in status_counts.items():
+            percentage = (count / total_orders * 100) if total_orders > 0 else 0
+            html_content += f"<tr><td>{status}</td><td>{count}</td><td>{percentage:.1f}%</td></tr>"
+        
+        html_content += "</table></div>"
+        
+        # Kurye performansı
+        html_content += """
+            <div class="section">
+                <h2 class="section-title">🚴 Kurye Performansı</h2>
+                <table>
+                    <tr><th>Kurye</th><th>Teslim Edilen Sipariş</th></tr>
+        """
+        
+        courier_perf = data.get('courier_performance', [])
+        for courier in courier_perf:
+            html_content += f"<tr><td>{courier.get('courier_name', 'Bilinmeyen')}</td><td>{courier.get('delivered_orders', 0)}</td></tr>"
+        
+        html_content += "</table></div>"
+        
+        # Restoran performansı
+        html_content += """
+            <div class="section">
+                <h2 class="section-title">🏪 Restoran Performansı</h2>
+                <table>
+                    <tr><th>Restoran</th><th>Sipariş Sayısı</th></tr>
+        """
+        
+        restaurant_perf = data.get('restaurant_performance', [])
+        for restaurant in restaurant_perf:
+            html_content += f"<tr><td>{restaurant.get('restaurant_name', 'Bilinmeyen')}</td><td>{restaurant.get('order_count', 0)}</td></tr>"
+        
+        html_content += """
+                </table>
+            </div>
+            <div class="section">
+                <p><em>Bu rapor otomatik olarak oluşturulmuştur. Rapor gönderildikten sonra kurye performans verileri sıfırlanmıştır.</em></p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return html_content, subject
+        
+    except Exception as e:
+        print(f"Email formatlama hatası: {e}")
+        return f"<p>Rapor formatlama hatası: {str(e)}</p>", "Rapor Hatası"
+
+def distribute_monthly_report():
+    """Aylık raporu Email ile dağıtır ve verileri sıfırlar"""
+    try:
+        print("Aylık rapor dağıtımı başlatılıyor...")
+        
+        # Raporu oluştur
+        report_data = generate_monthly_report()
+        
+        # Email gönder
+        email_html, email_subject = format_report_for_email(report_data)
+        email_success_count = 0
+        
+        for email_address in REPORT_RECIPIENTS.get('email', []):
+            try:
+                if send_email(email_address, email_subject, email_html):
+                    email_success_count += 1
+                else:
+                    print(f"Email gönderilemedi: {email_address}")
+            except Exception as e:
+                print(f"Email gönderme hatası ({email_address}): {e}")
+                # Hata yakalandı, işleme devam et
+        
+        # Rapor başarıyla gönderildiyse verileri sıfırla
+        if email_success_count > 0:
+            try:
+                reset_monthly_orders()
+                print("Aylık kurye performans verileri sıfırlandı")
+            except Exception as e:
+                print(f"Veri sıfırlama hatası: {e}")
+        
+        # Sonuçları logla
+        print(f"Rapor dağıtımı tamamlandı:")
+        print(f"- Email: {email_success_count}/{len(REPORT_RECIPIENTS.get('email', []))} başarılı")
+        
+        return {
+            'success': True,
+            'email_sent': email_success_count,
+            'total_recipients': len(REPORT_RECIPIENTS.get('email', [])),
+            'data_reset': email_success_count > 0
+        }
+        
+    except Exception as e:
+        print(f"Rapor dağıtım hatası: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+# ---------------- Manuel Rapor Tetikleme Endpoint'i ----------------
+@app.route("/admin/trigger-monthly-report", methods=["POST"])
+@admin_required
+def trigger_monthly_report():
+    """Manuel olarak aylık rapor tetikleme endpoint'i"""
+    try:
+        result = distribute_monthly_report()
+        
+        if result['success']:
+            response_data = {
+                "message": "Rapor dağıtımı başlatıldı",
+                "email_sent": result.get('email_sent', 0),
+                "total_recipients": result.get('total_recipients', 0)
+            }
+            if result.get('data_reset'):
+                response_data["message"] += " ve veriler sıfırlandı"
+            
+            return jsonify(response_data)
+        else:
+            return jsonify({
+                "message": "Rapor dağıtımı başarısız",
+                "error": result.get('error', 'Bilinmeyen hata')
+            }), 500
+            
+    except Exception as e:
+        print(f"Rapor tetikleme hatası: {e}")
+        return jsonify({
+            "message": "Rapor tetikleme sırasında hata oluştu",
+            "error": str(e)
+        }), 500
+
+# ---------------- Aylık Rapor Zamanlayıcı ----------------
+def schedule_monthly_report():
+    """Her ayın son günü saat 23:00'te rapor gönderimini planlar"""
+    try:
+        scheduler.add_job(
+            distribute_monthly_report,
+            'cron',
+            day='last',  # Ayın son günü
+            hour=23,     # Saat 23:00
+            minute=0,
+            id='monthly_report',
+            replace_existing=True
+        )
+        print("Aylık rapor zamanlayıcısı eklendi: Her ayın son günü saat 23:00")
+    except Exception as e:
+        print(f"Zamanlayıcı ekleme hatası: {e}")
+
+# Zamanlayıcıyı başlat
+scheduler.add_job(reset_daily_orders, 'cron', hour=0, minute=0)  # Her gün gece yarısı
 scheduler.start()
+
+# Uygulama başlatılırken zamanlayıcıyı başlat
+schedule_monthly_report()
 
 # ---------------- WebSocket Event Handlers ----------------
 @socketio.on('connect')
@@ -1157,7 +1527,7 @@ def admin_update_courier(courier_id):
     try:
         success = execute_write_with_retry(query, values)
         if not success:
-            return jsonify({"message": "Kurye güncellenirken hata oluştu"}), 500
+            return jsonify({"message": "Kurye güncellenirwhile hata oluştu"}), 500
 
         return jsonify({"message": "Kurye güncellendi"})
     except sqlite3.IntegrityError as e:
@@ -1693,7 +2063,7 @@ def admin_reports_orders():
         WHERE created_at >= ? AND created_at < ? GROUP BY status
     """, (start_dt.isoformat(), end_dt.isoformat()))
 
-    status_counts = {row[0]: row[1] for row in result} if result else {}
+    status_counts = {row["status"]: row["cnt"] for row in result} if result else {}
 
     # Courier performance
     result = execute_with_retry("""
@@ -1704,8 +2074,8 @@ def admin_reports_orders():
     perf = []
     if result:
         for row in result:
-            courier_id = row[0]
-            cnt = row[1]
+            courier_id = row["courier_id"]
+            cnt = row["delivered_count"]
             if not courier_id:
                 name = "Atanmamış"
             else:
@@ -1726,8 +2096,8 @@ def admin_reports_orders():
     rest_perf = []
     if result:
         for row in result:
-            vendor_id = row[0]
-            cnt = row[1]
+            vendor_id = row["vendor_id"]
+            cnt = row["order_count"]
             if vendor_id:
                 r = execute_with_retry("SELECT name FROM restaurants WHERE restaurant_id = ?", (vendor_id,))
                 if r and len(r) > 0:
