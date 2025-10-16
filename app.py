@@ -459,7 +459,7 @@ def assign_order_to_courier(order_id):
     if not result or len(result) == 0:
         return False
 
-    order = result[0]
+    order = row_to_dict(result[0])
 
     # Adresten mahalle bilgisini çıkar
     address = order["address"]
@@ -489,7 +489,8 @@ def assign_order_to_courier(order_id):
         
         if result and len(result) > 0:
             # Cooldown'daki kuryelerden en az siparişi olanı seç
-            for courier in result:
+            for courier_row in result:
+                courier = row_to_dict(courier_row)
                 courier_id = courier["courier_id"]
                 
                 # Kuryenin günlük sipariş sayısını al
@@ -549,7 +550,8 @@ def assign_order_to_courier(order_id):
         """, (neighborhood_id, five_min_ago))
 
         # Bu mahallede aktif siparişi olan kuryeleri önceliklendir
-        for courier in result:
+        for courier_row in result:
+            courier = row_to_dict(courier_row)
             courier_id = courier["courier_id"]
 
             # Kuryenin durumunu kontrol et
@@ -600,7 +602,8 @@ def assign_order_to_courier(order_id):
     """)
 
     if result and len(result) > 0:
-        courier_id = result[0]["id"]
+        courier = row_to_dict(result[0])
+        courier_id = courier["id"]
 
         # Siparişi kuryeye ata
         execute_write_with_retry("UPDATE orders SET courier_id = ? WHERE id = ?", (courier_id, order_id))
@@ -781,7 +784,7 @@ def auth_login():
     if not result or len(result) == 0:
         return jsonify({"message": "Kullanıcı bulunamadı"}), 404
 
-    user_row = result[0]
+    user_row = row_to_dict(result[0])
     if not check_password(password, user_row["password_hash"]):
         return jsonify({"message": "Parola yanlış"}), 401
 
@@ -941,7 +944,7 @@ def admin_reassign_order(order_id):
     if not new_courier_id:
         return jsonify({"message": "new_courier_id gereklidir"}), 400
 
-    # Get the current order details
+    # Get the current order details - row_to_dict kullan
     result = execute_with_retry("""
         SELECT o.*, c.id as current_courier_id, c.status as courier_status 
         FROM orders o 
@@ -952,10 +955,11 @@ def admin_reassign_order(order_id):
     if not result or len(result) == 0:
         return jsonify({"message": "Sipariş bulunamadı"}), 404
 
-    order = result[0]
+    # row_to_dict kullanarak sqlite3.Row'u dictionary'ye çevir
+    order = row_to_dict(result[0])
     current_courier_id = order["current_courier_id"]
 
-    # Check if new courier exists and is available
+    # Check if new courier exists and is available - row_to_dict kullan
     new_courier_result = execute_with_retry("""
         SELECT id, status, first_name, last_name 
         FROM couriers 
@@ -965,7 +969,8 @@ def admin_reassign_order(order_id):
     if not new_courier_result or len(new_courier_result) == 0:
         return jsonify({"message": "Yeni kurye bulunamadı veya müsait değil"}), 404
 
-    new_courier = new_courier_result[0]
+    # row_to_dict kullanarak sqlite3.Row'u dictionary'ye çevir
+    new_courier = row_to_dict(new_courier_result[0])
 
     # Validate order can be reassigned
     if order["status"] not in ["yeni", "teslim alındı"]:
@@ -1018,6 +1023,7 @@ def admin_reassign_order(order_id):
         ensure_courier_performance(new_courier_id)
         
         # 5. Set cooldown for new courier if neighborhood exists
+        # DÜZELTME: order artık dictionary, bu yüzden .get() kullanabiliriz
         if order.get("neighborhood_id"):
             set_courier_cooldown(new_courier_id, order["neighborhood_id"])
 
@@ -1029,7 +1035,7 @@ def admin_reassign_order(order_id):
              now)
         )
 
-        # 7. Notify new courier
+        # 7. Notify new courier - row_to_dict kullan
         order_result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
         if order_result and len(order_result) > 0:
             order_data = row_to_dict(order_result[0])
@@ -1170,7 +1176,7 @@ def courier_update_status(courier_id):
     # courier can update own status; admin can update any
     if request.user_role != "admin":
         result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
-        if not result or len(result) == 0 or result[0]["user_id"] != request.user_id:
+        if not result or len(result) == 0 or row_to_dict(result[0])["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
 
     data = request.get_json() or {}
@@ -1187,7 +1193,7 @@ def courier_get_orders(courier_id):
     # courier can view own assigned orders or admin
     if request.user_role != "admin":
         result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
-        if not result or len(result) == 0 or result[0]["user_id"] != request.user_id:
+        if not result or len(result) == 0 or row_to_dict(result[0])["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
 
     result = execute_with_retry("SELECT * FROM orders WHERE courier_id = ? AND status IN ('yeni','teslim alındı')",
@@ -1199,14 +1205,14 @@ def courier_get_orders(courier_id):
 def courier_pickup_order(courier_id, order_id):
     if request.user_role != "admin":
         result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
-        if not result or len(result) == 0 or result[0]["user_id"] != request.user_id:
+        if not result or len(result) == 0 or row_to_dict(result[0])["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
 
     result = execute_with_retry("SELECT * FROM orders WHERE id = ? AND courier_id = ?", (order_id, courier_id))
     if not result or len(result) == 0:
         return jsonify({"message": "Sipariş bulunamadı veya atanmadı"}), 404
 
-    order = result[0]
+    order = row_to_dict(result[0])
     if order["status"] != "yeni":
         return jsonify({"message": "Sipariş zaten alınmış veya teslim edilmiş"}), 400
 
@@ -1227,14 +1233,14 @@ def courier_pickup_order(courier_id, order_id):
 def courier_deliver_order(courier_id, order_id):
     if request.user_role != "admin":
         result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
-        if not result or len(result) == 0 or result[0]["user_id"] != request.user_id:
+        if not result or len(result) == 0 or row_to_dict(result[0])["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
 
     result = execute_with_retry("SELECT * FROM orders WHERE id = ? AND courier_id = ?", (order_id, courier_id))
     if not result or len(result) == 0:
         return jsonify({"message": "Sipariş bulunamadı veya atanmadı"}), 404
 
-    order = result[0]
+    order = row_to_dict(result[0])
     if order["status"] != "teslim alındı":
         return jsonify({"message": "Sipariş teslim alınmamış"}), 400
 
@@ -1261,7 +1267,7 @@ def courier_deliver_order(courier_id, order_id):
 def courier_fail_order(courier_id, order_id):
     if request.user_role != "admin":
         result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
-        if not result or len(result) == 0 or result[0]["user_id"] != request.user_id:
+        if not result or len(result) == 0 or row_to_dict(result[0])["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
 
     data = request.get_json() or {}
@@ -1273,6 +1279,7 @@ def courier_fail_order(courier_id, order_id):
     if not result or len(result) == 0:
         return jsonify({"message": "Sipariş bulunamadı veya atanmadı"}), 404
 
+    order = row_to_dict(result[0])
     now = datetime.utcnow().isoformat()
     execute_write_with_retry(
         "UPDATE orders SET status = 'teslim edilemedi', delivery_failed_reason = ?, updated_at = ? WHERE id = ?",
@@ -1300,7 +1307,7 @@ def courier_delivery_history(courier_id):
     # courier can view own delivery history
     if request.user_role != "admin":
         result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
-        if not result or len(result) == 0 or result[0]["user_id"] != request.user_id:
+        if not result or len(result) == 0 or row_to_dict(result[0])["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
 
     result = execute_with_retry("""
@@ -1321,7 +1328,7 @@ def restaurant_get_orders():
     restaurant_id = None
     result = execute_with_retry("SELECT restaurant_id FROM users WHERE id = ?", (request.user_id,))
     if result and len(result) > 0:
-        restaurant_id = result[0]["restaurant_id"]
+        restaurant_id = row_to_dict(result[0])["restaurant_id"]
     
     if not restaurant_id:
         return jsonify({"message": "Restoran ID bulunamadı"}), 404
@@ -1331,7 +1338,7 @@ def restaurant_get_orders():
     if not result or len(result) == 0:
         return jsonify({"message": "Restoran bulunamadı"}), 404
     
-    restaurant_name = result[0]["name"]
+    restaurant_name = row_to_dict(result[0])["name"]
     
     # Restoranın siparişlerini getir (orders.vendor_id eşleşmesi string restaurant_id ile yapılır)
     result = execute_with_retry("""
@@ -1349,7 +1356,7 @@ def restaurant_get_order(order_id):
     restaurant_id = None
     result = execute_with_retry("SELECT restaurant_id FROM users WHERE id = ?", (request.user_id,))
     if result and len(result) > 0:
-        restaurant_id = result[0]["restaurant_id"]
+        restaurant_id = row_to_dict(result[0])["restaurant_id"]
     
     if not restaurant_id:
         return jsonify({"message": "Restoran ID bulunamadı"}), 404
@@ -1359,7 +1366,7 @@ def restaurant_get_order(order_id):
     if not result or len(result) == 0:
         return jsonify({"message": "Restoran bulunamadı"}), 404
     
-    restaurant_name = result[0]["name"]
+    restaurant_name = row_to_dict(result[0])["name"]
     
     # Siparişi getir (vendor_id ile eşleşme)
     result = execute_with_retry("""
@@ -1651,7 +1658,8 @@ def manual_assign_orders():
         return jsonify({"message": "Atanmamış sipariş bulunamadı"})
 
     assigned_count = 0
-    for order in result:
+    for order_row in result:
+        order = row_to_dict(order_row)
         if assign_order_to_courier(order["id"]):
             assigned_count += 1
 
@@ -1703,7 +1711,8 @@ def admin_reports_orders():
             else:
                 r = execute_with_retry("SELECT first_name, last_name FROM couriers WHERE id = ?", (courier_id,))
                 if r and len(r) > 0:
-                    name = f"{r[0]['first_name']} {r[0]['last_name']}"
+                    r_dict = row_to_dict(r[0])
+                    name = f"{r_dict['first_name']} {r_dict['last_name']}"
                 else:
                     name = "Bilinmeyen Kurye"
             perf.append({"courier_id": courier_id, "courier_name": name, "delivered_orders": cnt})
@@ -1722,7 +1731,7 @@ def admin_reports_orders():
             if vendor_id:
                 r = execute_with_retry("SELECT name FROM restaurants WHERE restaurant_id = ?", (vendor_id,))
                 if r and len(r) > 0:
-                    name = r[0]['name']
+                    name = row_to_dict(r[0])['name']
                 else:
                     name = "Bilinmeyen Restoran"
             else:
@@ -1740,10 +1749,11 @@ def admin_reports_orders():
     courier_dist = []
     if result:
         for row in result:
+            row_dict = row_to_dict(row)
             courier_dist.append({
-                "courier_id": row["id"],
-                "courier_name": f"{row['first_name']} {row['last_name']}",
-                "daily_orders": row["daily_orders"]
+                "courier_id": row_dict["id"],
+                "courier_name": f"{row_dict['first_name']} {row_dict['last_name']}",
+                "daily_orders": row_dict["daily_orders"]
             })
 
     # Neighborhood distribution
@@ -1758,9 +1768,10 @@ def admin_reports_orders():
     neighborhood_dist = []
     if result:
         for row in result:
+            row_dict = row_to_dict(row)
             neighborhood_dist.append({
-                "neighborhood_name": row["name"],
-                "order_count": row["order_count"]
+                "neighborhood_name": row_dict["name"],
+                "order_count": row_dict["order_count"]
             })
 
     return jsonify({
