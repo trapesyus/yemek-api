@@ -35,18 +35,18 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 try:
     # Service account configuration
     service_account_info = {
-        "type": "service_account",
-        "project_id": "peremkurye-a432e",
-        "private_key_id": "d026df15a8bf7b963b4ea8200cbc6d117a50f332",
-        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDLaFCQm5ne2NzV\nv9BiblpQaw+DH0yLD4IVzxufH04dpKcBQfQUr9h/UjgNkuURA1MpLcH6cMDlXxzk\ndMy85HOlo9Pd0wI+wSDCyMI8VRChYHsbm84TvJAr4lRJH0SYGl2h3p9qbeFGBevV\neeOf8Vbmva0ERnolW2Uoi2OSWDSMxsE/pOM2HvgzRLQhF8aEAmyHVcRN5YXli/5K\nrzaKSQCDZBBaKECqQVQZllTj7yIiEMfq2ooRoD5k8EnSYCYQsJILenRq1ma8Y5sZ\nE/YNWgzXNThWodrhOiSYfKj4F1aiYa85B+XpoadjP6RQzp2JXW5Na1y2YNTDHL2v\n8cZCV7WRAgMBAAECggEAAhVXL+f8Fzl655CPopZ1Q9oY3lOxfcIip7UHmCVisDCJ\nylxB0v1rFwDBVLhCst4pGaSflkBV5XOIMPnWSAACBDoNlznMTda+Dmiufp4zbae2\nkxWRMogNpPlsOhSBKBqrB1eno9gsxMIWRIk7UN3QsUvTjBXptdy+CECHPE49eYyh\n7OKGfPWlbUgogFn4go6MwuDJjLul3IEbT7OgogH4mNVSMrJw5FbtsDaBuMGbLJKk\n9/d0GLcaG01ZlCSC9xY2FawrV328pOvxCkbmg7WITWEE8nSKMYMQaqQCGF9SiNcv\n104bN2Ww2GD6Oq5jt6d4yIojb3dhVPKH5KWe/EooEQKBgQDlVJ0UnlZ3tfXfNxHx\n5eZqpsvfkAEisYoWwUpEsluTQODuF3ZLZouuQVBsTPELpdXsS2/7zjfqMTU2xzlm\nklA4780+BNQOWZHtpkpkXTK9CG8o9zKsOP5gg7QIBHBF2+d8DhzgIt2z0CrcJlUD\n0NLwqjjXTGxOyMtKLrnsCxngmQKBgQDjD/KX91zOUWrBRP34RBTUna8Ck6yrm1+B\n+PiBeeDNJ9jWKy/4NWGLGCzDNbYhGHkyiNlq034iqNSTqohvXeRVuFN85GfuTW3d\nzNC0QaGiaOseu6MvBM9i8T+4KoHSQzLohBXS9Nora3xI6nQb8d3AFpgSlENa2j1M\niVEp3Mz/uQKBgE9SMPLMwYOugFiwp5hPuJ7zCllNadciKW0tdg7E0j/glOxFWTlD\nQtUG6lZLVqR8u717akRiU5zBYHKN/iCoQu8uooLtEJvWB0930Qtd4QrZO/mjZveC\nzxl69G5BesPvB+Y0y3ALHzvuqKR07brgI9XySq7NVDj74rTJ7KzkOhMhAoGBALro\nNr6nLSrcVC8xlomVqTv3bMeHPfyo0i6P/ie+ZrEZ2uE4/ayobFnuFXK/NOP7XFCf\n27CW1V68cPf4yYQ62qlBKOBGt9KuxABvB2FKIT4qdViABmy+3ePJSLVVsDWfgTlq\n+PgE+84AFXeEHv2d0/a54oZwqx0PRqRI6Jm4GrtpAoGBAN/DeXYZnJj9yRXeUxMQ\n2CN8hGd399iWBYnTwvpOT89MFug5JMyajNc435/gGgzpH+LSkfqzHrPn7UkdIExT\nFsv0JeM58cn3wzFrjv9usjKgfKsUo8qQrN46lVIHKD0HTkF6+xdtLRp7cTmIgFpc\n1lzUdUPfKjXE3QZibRY3/K02\n-----END PRIVATE KEY-----\n",
-        "client_email": "firebase-adminsdk-fbsvc@peremkurye-a432e.iam.gserviceaccount.com",
-        "client_id": "108595809281807082251",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40peremkurye-a432e.iam.gserviceaccount.com",
-        "universe_domain": "googleapis.com"
-    }
+  "type": "service_account",
+  "project_id": "peremkurye-a432e",
+  "private_key_id": "dfbdb81f5e5c53fe16f40f897a51efedbc63c19b",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCOOqnem3GMaJKQ\n1+waiaCfnM+/prboO6omC/FWWIRoRQhLtpARwzDysJjIth4vtGKyUOxCUZocYmO/\nlW0IA07q5qyhmtdilvuAdIrHdEXfmCPi5hixRdX6Fsx6w2ePIoaTfLEDOiV3jyNu\nN+DRLleurTklChb2IoHtyanQnUdbLH0EwvfIHa6w5WHRxzcWH2B3giIyL7Se/YM9\nwErwjdTVbM+cdVfqXp6sH8VS3WpMLLAfVynjn8MOwU/NKzjuz2IVhg7hbjRXXhE0\nKtGk0SCR8/R/JSAePF/JZr3IXRowRCw2fb5w8ZZX6tZ3y62C+AIaSqW3/rDXzYDE\nRPTNNLNvAgMBAAECggEABYY2ydwsxWDcbH7Of1tgH0L2eMGvcga7PZ4SIiHvBqPD\nxjkRkHcN5CdCz+zu8Dhn6vgkrRDBVR/nMu5JXVnPi2UpSF+cxQoLO7qLF2MnQZ+F\nqU75n40QWhXfnFcRoygapQjfUTpFcUbgf+vwsf9ETZcR1KP3L1k4xbUjAOTS/DIH\n1v+j5sXpXhDTqfS3h+k6lU8I5HXVBi/5EYHyIAIJnOcAQWD2Irm9j0BF1JgfCIBV\n2tUrcf3UhDHUlmI5MMtHKNz77HQD1/eAUXLcZ9s0fAKNsy6OwqN77cdTj/fkY2p1\nz1HDgUxv+Q9+enTHnEI5HFIaD3NPAYYAASJwbWuUCQKBgQDEBhP1MTquTpM+WygB\nNlASKzDKHsT/TttDhguPaRIDO3+GVYMN8gvYizQlpemyigtxCr679vVqV4h0X34H\ng9okJBaS62JLj8YuClXOrnWYECF6XEYx223VBTKy2rdPnVbawmKXHYFCl2/QRqe+\n8ZDJuBrwrvvVsj44OPZWFydiNwKBgQC5vwZqSRCLoAAzk4w0QJT53brFZUIHhtgN\nlenFCaeay//GcrkDWfBJn85MqzJo//5QHC+bnf4FCg59LFNGvJ+pcBanAuAU1Lu2\nNry9GEnmN2WW4B3xgn46/P/c8Dd7F8t0LBc/whI3itR6Gnx6Dd/3nL8uhJ/ZgRPU\n00U14aX8iQKBgAeRPIAAsIU+H00O89JoKFsrM6z51x0MDEblC9kzczCQwXGMJ40I\nRRDM/uxdJVJxJdPtWEOlWwAJ9QiZDyJ3Ipq2kfCGCbtlB3+LgpiB/6QpK0GwAj22\nfNz2YGirLNxz9IBpdKjkyLKrafOeZqdmZ/KBmvijqLEtOl2tRUU5i5mtAoGATTIT\n03ZcNvsfOlA287xnbdT1+3XS1Ff5UOQeDLKvgokH2wzw0XC+iYqt7XU09Sh3JAoi\nyxUFbki4rtMOJRbdcEjSUUTDpkSnYtoq5JfElrYtNWAdcbLfDVr6Z3M6S6EfAEAW\nxXu9oHHFTp3VX9CGZV0yo32hBX88o7XOTM9j8akCgYBf6R78NW6QFDHINTD8NH17\nrc8qMzvA8xsVitUxrqRxpq5+MIB6fJYDOcajZdUhhmJ9I+E4IGb3MXkLBGQbS8tk\ndCl7xbN5Mpuh5Nq8fmzsE9bGAJUQSgooF9GddeuQjdlBTCsSoPdCDXGsMfmZcqLA\nRGceOxRdN1ME+iUlQJS1Uw==\n-----END PRIVATE KEY-----\n",
+  "client_email": "firebase-adminsdk-fbsvc@peremkurye-a432e.iam.gserviceaccount.com",
+  "client_id": "108595809281807082251",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40peremkurye-a432e.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
     
     # Initialize Firebase Admin SDK
     cred = credentials.Certificate(service_account_info)
