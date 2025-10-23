@@ -561,37 +561,6 @@ def distribute_monthly_report():
             'error': str(e)
         }
 
-# ---------------- Manuel Rapor Tetikleme Endpoint'i ----------------
-@app.route("/admin/trigger-monthly-report", methods=["POST"])
-@admin_required
-def trigger_monthly_report():
-    """Manuel olarak aylık rapor tetikleme endpoint'i"""
-    try:
-        result = distribute_monthly_report()
-        
-        if result['success']:
-            response_data = {
-                "message": "Rapor dağıtımı başlatıldı",
-                "email_sent": result.get('email_sent', 0),
-                "total_recipients": result.get('total_recipients', 0)
-            }
-            if result.get('data_reset'):
-                response_data["message"] += " ve veriler sıfırlandı"
-            
-            return jsonify(response_data)
-        else:
-            return jsonify({
-                "message": "Rapor dağıtımı başarısız",
-                "error": result.get('error', 'Bilinmeyen hata')
-            }), 500
-            
-    except Exception as e:
-        print(f"Rapor tetikleme hatası: {e}")
-        return jsonify({
-            "message": "Rapor tetikleme sırasında hata oluştu",
-            "error": str(e)
-        }), 500
-
 # ---------------- Aylık Rapor Zamanlayıcı ----------------
 def schedule_monthly_report():
     """Her ayın son günü saat 23:00'te rapor gönderimini planlar"""
@@ -1125,6 +1094,38 @@ def assign_order_to_courier(order_id):
         return True
 
     return False
+# ---------------- Manuel Rapor Tetikleme Endpoint'i ----------------
+@app.route("/admin/trigger-monthly-report", methods=["POST"])
+@admin_required
+def trigger_monthly_report():
+    """Manuel olarak aylık rapor tetikleme endpoint'i"""
+    try:
+        result = distribute_monthly_report()
+        
+        if result['success']:
+            response_data = {
+                "message": "Rapor dağıtımı başlatıldı",
+                "email_sent": result.get('email_sent', 0),
+                "total_recipients": result.get('total_recipients', 0)
+            }
+            if result.get('data_reset'):
+                response_data["message"] += " ve veriler sıfırlandı"
+            
+            return jsonify(response_data)
+        else:
+            return jsonify({
+                "message": "Rapor dağıtımı başarısız",
+                "error": result.get('error', 'Bilinmeyen hata')
+            }), 500
+            
+    except Exception as e:
+        print(f"Rapor tetikleme hatası: {e}")
+        return jsonify({
+            "message": "Rapor tetikleme sırasında hata oluştu",
+            "error": str(e)
+        }), 500
+
+
 
 # ---------------- Auth: register/login ----------------
 @app.route("/auth/register", methods=["POST"])
