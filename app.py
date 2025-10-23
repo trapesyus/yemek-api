@@ -39,7 +39,7 @@ EMAIL_USERNAME = "your_email@gmail.com"  # Gerçek email adresinizle değiştiri
 EMAIL_PASSWORD = "your_app_password"     # Gmail App Password ile değiştirin
 
 # FCM Server Key (Firebase Console'dan alınacak)
-FCM_SERVER_KEY = "94a98412778ae9aa36e3428362c797963f4189b4"  # Environment variable olarak saklayın
+FCM_SERVER_KEY = "407284966225"  # Environment variable olarak saklayın
 
 # Rapor alıcıları
 REPORT_RECIPIENTS = {
