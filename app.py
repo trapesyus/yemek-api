@@ -10,6 +10,7 @@ import time
 import json
 import traceback
 import smtplib
+import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from functools import wraps
@@ -37,10 +38,51 @@ SMTP_PORT = 587
 EMAIL_USERNAME = "your_email@gmail.com"  # Gerçek email adresinizle değiştirin
 EMAIL_PASSWORD = "your_app_password"     # Gmail App Password ile değiştirin
 
+# FCM Server Key (Firebase Console'dan alınacak)
+FCM_SERVER_KEY = "94a98412778ae9aa36e3428362c797963f4189b4"  # Environment variable olarak saklayın
+
 # Rapor alıcıları
 REPORT_RECIPIENTS = {
     "email": ["admin@firma.com", "rapor@firma.com"]  # Email adreslerinizle değiştirin
 }
+
+# ---------------- FCM Bildirim Fonksiyonları ----------------
+def send_fcm_notification(fcm_token, title, body, data=None):
+    """FCM ile push bildirim gönderir"""
+    if not fcm_token:
+        print("FCM token bulunamadı")
+        return False
+        
+    try:
+        url = 'https://fcm.googleapis.com/fcm/send'
+        headers = {
+            'Authorization': f'key={FCM_SERVER_KEY}',
+            'Content-Type': 'application/json'
+        }
+        
+        payload = {
+            'to': fcm_token,
+            'notification': {
+                'title': title,
+                'body': body,
+                'sound': 'default',
+                'click_action': 'FLUTTER_NOTIFICATION_CLICK'
+            },
+            'data': data or {}
+        }
+        
+        response = requests.post(url, json=payload, headers=headers)
+        
+        if response.status_code == 200:
+            print(f"FCM bildirimi gönderildi: {fcm_token}")
+            return True
+        else:
+            print(f"FCM hatası: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"FCM gönderme hatası: {e}")
+        return False
 
 # ---------------- DB ----------------
 def get_conn():
@@ -605,19 +647,92 @@ def handle_courier_register(data):
         print(f'Kurye kayıt hatası: {e}')
         emit('registration_error', {'message': 'Kayıt sırasında hata oluştu'})
 
-# Sipariş atandığında bildirim gönderme fonksiyonu
+# ---------------- Bildirim Fonksiyonları ----------------
 def notify_courier_new_order(courier_id, order_data):
+    """Kuryeye hem WebSocket hem FCM bildirimi gönderir"""
     try:
         courier_id = str(courier_id)
+        websocket_sent = False
+        fcm_sent = False
+        
+        # 1. Önce WebSocket bildirimi dene
         if courier_id in courier_connections:
             socketio.emit('new_order', order_data, room=f'courier_{courier_id}')
-            print(f"Notification sent to courier {courier_id}: {order_data}")
-            return True
-        else:
-            print(f"Courier {courier_id} is not connected")
-            return False
+            print(f"WebSocket bildirimi gönderildi: courier {courier_id}")
+            websocket_sent = True
+        
+        # 2. FCM bildirimi gönder (WebSocket başarısız olsa da)
+        result = execute_with_retry("SELECT fcm_token FROM couriers WHERE id = ?", (courier_id,))
+        if result and len(result) > 0:
+            courier = row_to_dict(result[0])
+            fcm_token = courier.get('fcm_token')
+            
+            if fcm_token:
+                title = "Yeni Sipariş 🚴"
+                body = f"{order_data.get('customer_name', 'Müşteri')} - {order_data.get('address', 'Adres')}"
+                
+                # FCM data payload
+                fcm_data = {
+                    'type': 'new_order',
+                    'order_id': str(order_data.get('order_id')),
+                    'order_uuid': order_data.get('order_uuid', ''),
+                    'customer_name': order_data.get('customer_name', ''),
+                    'address': order_data.get('address', ''),
+                    'total_amount': str(order_data.get('total_amount', 0)),
+                    'items': order_data.get('items', ''),
+                    'click_action': 'FLUTTER_NOTIFICATION_CLICK'
+                }
+                
+                fcm_sent = send_fcm_notification(fcm_token, title, body, fcm_data)
+        
+        return websocket_sent or fcm_sent
+        
     except Exception as e:
         print(f"Bildirim gönderme hatası: {e}")
+        return False
+
+def notify_courier_reassignment(courier_id, order_id, action):
+    """Kuryeye yeniden atama bildirimi gönderir"""
+    try:
+        courier_id = str(courier_id)
+        
+        # WebSocket bildirimi
+        if courier_id in courier_connections:
+            notification_data = {
+                'order_id': order_id,
+                'action': action,
+                'message': 'Bir sipariş size yeniden atandı' if action == 'removed' else 'Yeni sipariş atandı'
+            }
+            socketio.emit('order_reassigned', notification_data, room=f'courier_{courier_id}')
+            print(f"Reassignment WebSocket bildirimi: courier {courier_id}")
+        
+        # FCM bildirimi
+        result = execute_with_retry("SELECT fcm_token FROM couriers WHERE id = ?", (courier_id,))
+        if result and len(result) > 0:
+            courier = row_to_dict(result[0])
+            fcm_token = courier.get('fcm_token')
+            
+            if fcm_token:
+                if action == 'removed':
+                    title = "Sipariş Yeniden Atandı"
+                    body = "Bir sipariş başka kuryeye atandı"
+                else:
+                    title = "Yeni Sipariş Atandı"
+                    body = "Size yeni bir sipariş atandı"
+                
+                fcm_data = {
+                    'type': 'reassignment',
+                    'order_id': str(order_id),
+                    'action': action,
+                    'click_action': 'FLUTTER_NOTIFICATION_CLICK'
+                }
+                
+                send_fcm_notification(fcm_token, title, body, fcm_data)
+        
+        return True
+        
+    except Exception as e:
+        print(f"Yeniden atama bildirimi hatası: {e}")
         return False
 
 # ---------------- Veritabanı İşlemleri İçin Yardımcı Fonksiyonlar ----------------
@@ -1187,6 +1302,7 @@ def auth_login():
 @app.route("/couriers/<int:courier_id>/fcm-token", methods=["POST"])
 @token_required
 def update_fcm_token(courier_id):
+    """Kuryenin FCM token'ını günceller"""
     if request.user_role != "admin":
         result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
         if not result or len(result) == 0 or result[0]["user_id"] != request.user_id:
@@ -1198,12 +1314,20 @@ def update_fcm_token(courier_id):
     if not fcm_token:
         return jsonify({"message": "FCM token gerekli"}), 400
 
-    execute_write_with_retry(
-        "UPDATE couriers SET fcm_token = ? WHERE id = ?",
-        (fcm_token, courier_id)
-    )
-
-    return jsonify({"message": "FCM token güncellendi"})
+    try:
+        success = execute_write_with_retry(
+            "UPDATE couriers SET fcm_token = ? WHERE id = ?",
+            (fcm_token, courier_id)
+        )
+        
+        if success:
+            return jsonify({"message": "FCM token güncellendi"})
+        else:
+            return jsonify({"message": "FCM token güncellenemedi"}), 500
+            
+    except Exception as e:
+        print(f"FCM token güncelleme hatası: {e}")
+        return jsonify({"message": "Sunucu hatası"}), 500
 
 # ---------------- Admin creates courier (explicit) ----------------
 @app.route("/admin/couriers", methods=["POST"])
@@ -1432,28 +1556,6 @@ def admin_reassign_order(order_id):
         print(f"Sipariş yeniden atama hatası: {e}")
         traceback.print_exc()
         return jsonify({"message": "Sipariş yeniden atanırken hata oluştu", "error": str(e)}), 500
-
-def notify_courier_reassignment(courier_id, order_id, action):
-    """
-    Notify a courier that an order has been reassigned from them
-    """
-    try:
-        courier_id = str(courier_id)
-        if courier_id in courier_connections:
-            notification_data = {
-                'order_id': order_id,
-                'action': action,  # 'removed'
-                'message': 'Bir sipariş size yeniden atandı' if action == 'removed' else 'Yeni sipariş atandı'
-            }
-            socketio.emit('order_reassigned', notification_data, room=f'courier_{courier_id}')
-            print(f"Reassignment notification sent to courier {courier_id}: {notification_data}")
-            return True
-        else:
-            print(f"Courier {courier_id} is not connected for reassignment notification")
-            return False
-    except Exception as e:
-        print(f"Reassignment bildirim gönderme hatası: {e}")
-        return False
 
 # ---------------- Users management (admin) ----------------
 @app.route("/users", methods=["GET"])
