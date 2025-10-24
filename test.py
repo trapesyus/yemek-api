@@ -6,9 +6,8 @@ import firebase_admin
 from firebase_admin import credentials, messaging
 
 CRED_PATHS = [
-    "/etc/creds/service-account.json",
-    "/root/service-account.json",
-    "./service-account.json"
+    "service-account.json"
+   
 ]
 
 def find_cred():
