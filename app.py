@@ -11,15 +11,23 @@ import json
 import traceback
 import smtplib
 import requests
+import os
+import logging
+from logging.handlers import RotatingFileHandler
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from functools import wraps
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # Firebase Admin SDK imports
-import firebase_admin
-from firebase_admin import credentials, messaging
-from firebase_admin.exceptions import FirebaseError
+try:
+    import firebase_admin
+    from firebase_admin import credentials, messaging
+    from firebase_admin.exceptions import FirebaseError
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    FIREBASE_AVAILABLE = False
+    print("⚠️ Firebase Admin SDK kurulu değil. FCM özellikleri devre dışı.")
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'çok_gizli_bir_anahtar_socket_io_icin'
@@ -31,26 +39,85 @@ TOKEN_EXP_HOURS = 8
 # SocketIO initialization
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
+# Loglama sistemini kur
+def setup_logging():
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    
+    # File handler
+    file_handler = RotatingFileHandler(
+        'logs/app.log', 
+        maxBytes=10240, 
+        backupCount=10
+    )
+    file_handler.setFormatter(logging.Formatter(
+        '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
+    ))
+    file_handler.setLevel(logging.INFO)
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+    
+    # App logger
+    app.logger.setLevel(logging.INFO)
+    app.logger.addHandler(file_handler)
+    app.logger.addHandler(console_handler)
+
+setup_logging()
+
 # Firebase Admin SDK initialization
-try:
-    # Service account configuration (Best Practice: Load from file)
-    # 1. Firebase Proje Ayarları > Hizmet Hesapları'ndan yeni bir özel anahtar oluşturun.
-    # 2. Oluşturulan JSON dosyasını indirin ve adını 'service-account-key.json' olarak değiştirin.
-    # 3. Bu dosyayı 'app.py' ile aynı dizine koyun.
-    # DİKKAT: Bu dosyayı ASLA herkese açık bir yere (örn. GitHub) yüklemeyin!
-    cred = credentials.Certificate("service-account.json")
-    firebase_app = firebase_admin.initialize_app(cred)
-    print("✅ Firebase Admin SDK başarıyla başlatıldı")
+firebase_app = None
+if FIREBASE_AVAILABLE:
+    try:
+        # Service account dosyasını farklı isimlerde dene
+        service_account_files = [
+            "service-account.json",
+            "service-account-key.json", 
+            "firebase-service-account.json"
+        ]
+        
+        for service_file in service_account_files:
+            try:
+                if os.path.exists(service_file):
+                    cred = credentials.Certificate(service_file)
+                    firebase_app = firebase_admin.initialize_app(cred)
+                    app.logger.info(f"✅ Firebase Admin SDK başarıyla başlatıldı: {service_file}")
+                    break
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                app.logger.error(f"❌ {service_file} yüklenirken hata: {e}")
+                continue
+        
+        if not firebase_app:
+            app.logger.warning("❌ Hiçbir service account dosyası bulunamadı. FCM özellikleri devre dışı.")
+            
+    except Exception as e:
+        app.logger.error(f"❌ Firebase Admin SDK başlatma hatası: {e}")
+        firebase_app = None
+else:
+    app.logger.warning("⚠️ Firebase Admin SDK kurulu değil. FCM özellikleri devre dışı.")
 
-except FileNotFoundError:
-    print("❌ Firebase Admin SDK başlatma hatası: 'service-account-key.json' dosyası bulunamadı.")
-    print("   Lütfen Firebase projenizden bir hizmet hesabı anahtarı indirip bu isimle kaydedin.")
-    firebase_app = None
-except Exception as e:
-    print(f"❌ Firebase Admin SDK başlatma hatası: {e}")
-    print("   Sunucunuzun saatinin (NTP) doğru olduğundan emin olun. 'invalid_grant' hatası genellikle saat farkından kaynaklanır.")
-    firebase_app = None
-
+def check_firebase_setup():
+    """Firebase kurulum durumunu kontrol et ve kullanıcıyı bilgilendir"""
+    if not firebase_app:
+        app.logger.warning("\n" + "="*60)
+        app.logger.warning("🚨 FIREBASE KURULUMU GEREKLİ")
+        app.logger.warning("="*60)
+        app.logger.warning("FCM push bildirimleri için Firebase Admin SDK kurulumu gerekiyor:")
+        app.logger.warning("1. Firebase Console'dan service account key indirin")
+        app.logger.warning("2. Dosyayı 'service-account.json' olarak kaydedin")
+        app.logger.warning("3. Veya mevcut dosyanın yolunu kontrol edin")
+        app.logger.warning("📁 Mevcut dosyalar:")
+        for f in ["service-account.json", "service-account-key.json"]:
+            if os.path.exists(f):
+                app.logger.warning(f"   ✅ {f} - BULUNDU")
+            else:
+                app.logger.warning(f"   ❌ {f} - BULUNAMADI")
+        app.logger.warning("="*60 + "\n")
+    else:
+        app.logger.info("✅ Firebase Admin SDK aktif - FCM bildirimleri hazır")
 
 # Kurye WebSocket bağlantıları için sözlük
 courier_connections = {}
@@ -77,7 +144,6 @@ def validate_fcm_token(fcm_token):
         return False
     
     if not firebase_app:
-        print("❌ FCM validasyonu yapılamadı: Firebase Admin SDK başlatılmamış.")
         return False
 
     try:
@@ -88,27 +154,27 @@ def validate_fcm_token(fcm_token):
         )
         # Dry run gerçek bildirim göndermez
         response = messaging.send(message, dry_run=True)
-        print(f"✅ FCM token valid: {fcm_token[:10]}...")
+        app.logger.info(f"✅ FCM token valid: {fcm_token[:10]}...")
         return True
     except FirebaseError as e:
-        print(f"❌ FCM token invalid ({fcm_token[:10]}...): {e}")
+        app.logger.error(f"❌ FCM token invalid ({fcm_token[:10]}...): {e}")
         return False
     except Exception as e:
-        print(f"❌ FCM token validation error: {e}")
+        app.logger.error(f"❌ FCM token validation error: {e}")
         # Bu hata 'invalid_grant' ise, sunucu saatinizi kontrol edin!
         if 'invalid_grant' in str(e):
-             print("🚨 DİKKAT: 'invalid_grant' hatası alındı. Lütfen sunucu saatinizin (NTP) doğru olduğundan emin olun!")
+             app.logger.error("🚨 DİKKAT: 'invalid_grant' hatası alındı. Lütfen sunucu saatinizin (NTP) doğru olduğundan emin olun!")
         return False
 
 
 def send_fcm_notification(fcm_token, title, body, data=None):
     """FCM ile push bildirim gönderir - Firebase Admin SDK kullanarak"""
     if not fcm_token:
-        print("⚠️ FCM token bulunamadı")
+        app.logger.warning("⚠️ FCM token bulunamadı")
         return False
         
     if not firebase_app:
-        print("❌ FCM gönderilemedi: Firebase Admin SDK başlatılmamış.")
+        app.logger.warning("❌ FCM gönderilemedi: Firebase Admin SDK başlatılmamış.")
         return False
 
     try:
@@ -142,18 +208,18 @@ def send_fcm_notification(fcm_token, title, body, data=None):
 
         # Bildirimi gönder
         response = messaging.send(message)
-        print(f"✅ FCM bildirimi gönderildi: {fcm_token[:10]}... - Message ID: {response}")
+        app.logger.info(f"✅ FCM bildirimi gönderildi: {fcm_token[:10]}... - Message ID: {response}")
         return True
 
     except FirebaseError as e:
-        print(f"❌ FCM gönderme hatası: {e}")
+        app.logger.error(f"❌ FCM gönderme hatası: {e}")
         if 'invalid_grant' in str(e):
-            print("🚨 DİKKAT: 'invalid_grant' hatası alındı. Lütfen sunucu saatinizin (NTP) doğru olduğundan emin olun!")
+            app.logger.error("🚨 DİKKAT: 'invalid_grant' hatası alındı. Lütfen sunucu saatinizin (NTP) doğru olduğundan emin olun!")
         if 'NOT_FOUND' in str(e) or 'INVALID_ARGUMENT' in str(e):
             cleanup_invalid_fcm_token(fcm_token)
         return False
     except Exception as e:
-        print(f"❌ Beklenmeyen FCM hatası: {e}")
+        app.logger.error(f"❌ Beklenmeyen FCM hatası: {e}")
         return False
 
 
@@ -165,11 +231,11 @@ def cleanup_invalid_fcm_token(invalid_token):
             (invalid_token,)
         )
         if success:
-            print(f"🧹 Geçersiz FCM token veritabanından temizlendi: {invalid_token[:10]}...")
+            app.logger.info(f"🧹 Geçersiz FCM token veritabanından temizlendi: {invalid_token[:10]}...")
         else:
-            print(f"⚠️ Geçersiz FCM token temizlenemedi: {invalid_token[:10]}...")
+            app.logger.warning(f"⚠️ Geçersiz FCM token temizlenemedi: {invalid_token[:10]}...")
     except Exception as e:
-        print(f"❌ FCM token temizleme hatası: {e}")
+        app.logger.error(f"❌ FCM token temizleme hatası: {e}")
 
 
 # ---------------- DB ----------------
@@ -344,9 +410,9 @@ def reset_daily_orders():
         cur.execute("UPDATE courier_performance SET daily_orders = 0")
         conn.commit()
         conn.close()
-        print("✅ Günlük kurye sipariş sayıları sıfırlandı")
+        app.logger.info("✅ Günlük kurye sipariş sayıları sıfırlandı")
     except Exception as e:
-        print(f"❌ Günlük sıfırlama hatası: {e}")
+        app.logger.error(f"❌ Günlük sıfırlama hatası: {e}")
 
 
 # ---------------- Aylık Kurye Performans Sıfırlama ----------------
@@ -358,9 +424,9 @@ def reset_monthly_orders():
         cur.execute("UPDATE courier_performance SET daily_orders = 0, total_orders = 0")
         conn.commit()
         conn.close()
-        print("✅ Aylık kurye sipariş sayıları sıfırlandı")
+        app.logger.info("✅ Aylık kurye sipariş sayıları sıfırlandı")
     except Exception as e:
-        print(f"❌ Aylık sıfırlama hatası: {e}")
+        app.logger.error(f"❌ Aylık sıfırlama hatası: {e}")
 
 
 # ---------------- Email Gönderme Fonksiyonu ----------------
@@ -383,11 +449,11 @@ def send_email(to_email, subject, html_content):
         server.send_message(msg)
         server.quit()
 
-        print(f"✅ Email gönderildi: {to_email}")
+        app.logger.info(f"✅ Email gönderildi: {to_email}")
         return True
 
     except Exception as e:
-        print(f"❌ Email gönderme hatası ({to_email}): {e}")
+        app.logger.error(f"❌ Email gönderme hatası ({to_email}): {e}")
         return False
 
 
@@ -404,7 +470,7 @@ def generate_monthly_report():
         start_date = first_day_of_previous_month.strftime("%Y-%m-%d")
         end_date = last_day_of_previous_month.strftime("%Y-%m-%d")
 
-        print(f"Aylık rapor oluşturuluyor: {start_date} - {end_date}")
+        app.logger.info(f"Aylık rapor oluşturuluyor: {start_date} - {end_date}")
 
         # Status counts
         result = execute_with_retry("""
@@ -504,7 +570,7 @@ def generate_monthly_report():
         }
 
     except Exception as e:
-        print(f"❌ Rapor oluşturma hatası: {e}")
+        app.logger.error(f"❌ Rapor oluşturma hatası: {e}")
         return {
             'success': False,
             'error': str(e)
@@ -606,14 +672,14 @@ def format_report_for_email(report_data):
         return html_content, subject
 
     except Exception as e:
-        print(f"❌ Email formatlama hatası: {e}")
+        app.logger.error(f"❌ Email formatlama hatası: {e}")
         return f"<p>Rapor formatlama hatası: {str(e)}</p>", "Rapor Hatası"
 
 
 def distribute_monthly_report():
     """Aylık raporu Email ile dağıtır ve verileri sıfırlar"""
     try:
-        print("Aylık rapor dağıtımı başlatılıyor...")
+        app.logger.info("Aylık rapor dağıtımı başlatılıyor...")
 
         # Raporu oluştur
         report_data = generate_monthly_report()
@@ -627,21 +693,21 @@ def distribute_monthly_report():
                 if send_email(email_address, email_subject, email_html):
                     email_success_count += 1
                 else:
-                    print(f"❌ Email gönderilemedi: {email_address}")
+                    app.logger.error(f"❌ Email gönderilemedi: {email_address}")
             except Exception as e:
-                print(f"❌ Email gönderme hatası ({email_address}): {e}")
+                app.logger.error(f"❌ Email gönderme hatası ({email_address}): {e}")
 
         # Rapor başarıyla gönderildiyse verileri sıfırla
         if email_success_count > 0:
             try:
                 reset_monthly_orders()
-                print("✅ Aylık kurye performans verileri sıfırlandı")
+                app.logger.info("✅ Aylık kurye performans verileri sıfırlandı")
             except Exception as e:
-                print(f"❌ Veri sıfırlama hatası: {e}")
+                app.logger.error(f"❌ Veri sıfırlama hatası: {e}")
 
         # Sonuçları logla
-        print(f"Rapor dağıtımı tamamlandı:")
-        print(f"- Email: {email_success_count}/{len(REPORT_RECIPIENTS.get('email', []))} başarılı")
+        app.logger.info(f"Rapor dağıtımı tamamlandı:")
+        app.logger.info(f"- Email: {email_success_count}/{len(REPORT_RECIPIENTS.get('email', []))} başarılı")
 
         return {
             'success': True,
@@ -651,7 +717,7 @@ def distribute_monthly_report():
         }
 
     except Exception as e:
-        print(f"❌ Rapor dağıtım hatası: {e}")
+        app.logger.error(f"❌ Rapor dağıtım hatası: {e}")
         return {
             'success': False,
             'error': str(e)
@@ -671,9 +737,9 @@ def schedule_monthly_report():
             id='monthly_report',
             replace_existing=True
         )
-        print("✅ Aylık rapor zamanlayıcısı eklendi: Her ayın son günü saat 23:00")
+        app.logger.info("✅ Aylık rapor zamanlayıcısı eklendi: Her ayın son günü saat 23:00")
     except Exception as e:
-        print(f"❌ Zamanlayıcı ekleme hatası: {e}")
+        app.logger.error(f"❌ Zamanlayıcı ekleme hatası: {e}")
 
 
 # Zamanlayıcıyı başlat
@@ -685,18 +751,18 @@ scheduler.start()
 # ---------------- WebSocket Event Handlers ----------------
 @socketio.on('connect')
 def handle_connect():
-    print('✅ Client connected: ' + request.sid)
+    app.logger.info('✅ Client connected: ' + request.sid)
     emit('connection_response', {'data': 'Bağlantı başarılı'})
 
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    print('❌ Client disconnected: ' + request.sid)
+    app.logger.info('❌ Client disconnected: ' + request.sid)
     # Bağlantı koptuğunda sözlükten kaldır
     for courier_id, sid in list(courier_connections.items()):
         if sid == request.sid:
             del courier_connections[courier_id]
-            print(f'❌ Courier {courier_id} bağlantısı kesildi')
+            app.logger.info(f'❌ Courier {courier_id} bağlantısı kesildi')
             break
 
 
@@ -707,12 +773,12 @@ def handle_courier_register(data):
         if courier_id:
             courier_connections[courier_id] = request.sid
             join_room(f'courier_{courier_id}')
-            print(f'✅ Courier {courier_id} registered with SID: {request.sid}')
+            app.logger.info(f'✅ Courier {courier_id} registered with SID: {request.sid}')
             emit('registration_success', {'message': 'Kurye kaydı başarılı'})
         else:
             emit('registration_error', {'message': 'Kurye ID gerekli'})
     except Exception as e:
-        print(f'❌ Kurye kayıt hatası: {e}')
+        app.logger.error(f'❌ Kurye kayıt hatası: {e}')
         emit('registration_error', {'message': 'Kayıt sırasında hata oluştu'})
 
 
@@ -727,7 +793,7 @@ def notify_courier_new_order(courier_id, order_data):
         # 1. Önce WebSocket bildirimi dene
         if courier_id in courier_connections:
             socketio.emit('new_order', order_data, room=f'courier_{courier_id}')
-            print(f"✅ WebSocket bildirimi gönderildi: courier {courier_id}")
+            app.logger.info(f"✅ WebSocket bildirimi gönderildi: courier {courier_id}")
             websocket_sent = True
 
         # 2. FCM bildirimi gönder (WebSocket başarısız olsa da)
@@ -757,7 +823,7 @@ def notify_courier_new_order(courier_id, order_data):
         return websocket_sent or fcm_sent
 
     except Exception as e:
-        print(f"❌ Bildirim gönderme hatası: {e}")
+        app.logger.error(f"❌ Bildirim gönderme hatası: {e}")
         return False
 
 
@@ -774,7 +840,7 @@ def notify_courier_reassignment(courier_id, order_id, action):
                 'message': 'Bir sipariş size yeniden atandı' if action == 'removed' else 'Yeni sipariş atandı'
             }
             socketio.emit('order_reassigned', notification_data, room=f'courier_{courier_id}')
-            print(f"✅ Reassignment WebSocket bildirimi: courier {courier_id}")
+            app.logger.info(f"✅ Reassignment WebSocket bildirimi: courier {courier_id}")
 
         # FCM bildirimi
         result = execute_with_retry("SELECT fcm_token FROM couriers WHERE id = ?", (courier_id,))
@@ -802,7 +868,7 @@ def notify_courier_reassignment(courier_id, order_id, action):
         return True
 
     except Exception as e:
-        print(f"❌ Yeniden atama bildirimi hatası: {e}")
+        app.logger.error(f"❌ Yeniden atama bildirimi hatası: {e}")
         return False
 
 
@@ -1239,7 +1305,7 @@ def trigger_monthly_report():
             }), 500
 
     except Exception as e:
-        print(f"❌ Rapor tetikleme hatası: {e}")
+        app.logger.error(f"❌ Rapor tetikleme hatası: {e}")
         return jsonify({
             "message": "Rapor tetikleme sırasında hata oluştu",
             "error": str(e)
@@ -1262,23 +1328,32 @@ def update_fcm_token(courier_id):
     if not fcm_token:
         return jsonify({"message": "FCM token gerekli"}), 400
 
-    # Token'ı validate et
-    if not validate_fcm_token(fcm_token):
-        return jsonify({"message": "Geçersiz FCM token"}), 400
-
     try:
+        # Firebase başlatılmışsa validate et, değilse direkt kaydet
+        if firebase_app:
+            is_valid = validate_fcm_token(fcm_token)
+            if not is_valid:
+                return jsonify({"message": "Geçersiz FCM token"}), 400
+        
+        # Token'ı kaydet
         success = execute_write_with_retry(
             "UPDATE couriers SET fcm_token = ? WHERE id = ?",
             (fcm_token, courier_id)
         )
 
         if success:
-            return jsonify({"message": "FCM token güncellendi ve validate edildi"})
+            message = "FCM token güncellendi"
+            if firebase_app:
+                message += " ve validate edildi"
+            else:
+                message += " (Firebase bağlantısı olmadığı için validate edilemedi)"
+                
+            return jsonify({"message": message})
         else:
             return jsonify({"message": "FCM token güncellenemedi"}), 500
 
     except Exception as e:
-        print(f"❌ FCM token güncelleme hatası: {e}")
+        app.logger.error(f"❌ FCM token güncelleme hatası: {e}")
         return jsonify({"message": "Sunucu hatası"}), 500
 
 
@@ -1298,7 +1373,7 @@ def validate_all_fcm_tokens():
             courier = row_to_dict(row)
             fcm_token = courier.get('fcm_token')
 
-            if fcm_token and validate_fcm_token(fcm_token):
+            if fcm_token and firebase_app and validate_fcm_token(fcm_token):
                 valid_count += 1
             else:
                 invalid_tokens.append(fcm_token)
@@ -1313,7 +1388,7 @@ def validate_all_fcm_tokens():
         })
 
     except Exception as e:
-        print(f"❌ Toplu FCM validasyon hatası: {e}")
+        app.logger.error(f"❌ Toplu FCM validasyon hatası: {e}")
         return jsonify({"message": "Validasyon sırasında hata oluştu"}), 500
 
 
@@ -1717,7 +1792,7 @@ def admin_reassign_order(order_id):
         })
 
     except Exception as e:
-        print(f"❌ Sipariş yeniden atama hatası: {e}")
+        app.logger.error(f"❌ Sipariş yeniden atama hatası: {e}")
         traceback.print_exc()
         return jsonify({"message": "Sipariş yeniden atanırken hata oluştu", "error": str(e)}), 500
 
@@ -2060,29 +2135,29 @@ def webhook_yemeksepeti():
         )
     except sqlite3.IntegrityError as ie:
         # duplicate veya constraint hatası
-        print("❌ WEBHOOK INSERT IntegrityError:", ie)
+        app.logger.error("❌ WEBHOOK INSERT IntegrityError:", ie)
         traceback.print_exc()
         return jsonify({"message": "Sipariş kaydedilirken hata (duplicate veya integrity)", "error": str(ie)}), 400
     except Exception as e:
-        print("❌ WEBHOOK INSERT HATA:", e)
+        app.logger.error("❌ WEBHOOK INSERT HATA:", e)
         traceback.print_exc()
         return jsonify({"message": "Sunucu hatası (insert sırasında)", "error": str(e)}), 500
 
     if not ok:
         # execute_write_with_retry başarısız oldu (örn. OperationalError yakalandı ve False döndü)
-        print("❌ WEBHOOK: INSERT başarısız (ok == False)")
+        app.logger.error("❌ WEBHOOK: INSERT başarısız (ok == False)")
         return jsonify({"message": "Sunucu hatası (insert başarısız)"}), 500
 
     # 2) INSERT sonrası kesin kontrol: satırı oku
     try:
         result = execute_with_retry("SELECT id FROM orders WHERE order_uuid = ?", (order_uuid,))
     except Exception as e:
-        print("❌ WEBHOOK SELECT HATASI:", e)
+        app.logger.error("❌ WEBHOOK SELECT HATASI:", e)
         traceback.print_exc()
         return jsonify({"message": "Sunucu hatası (insert doğrulama sırasında)", "error": str(e)}), 500
 
     if not result or len(result) == 0:
-        print("❌ WEBHOOK: INSERT sonrası order bulunamadı, order_uuid:", order_uuid)
+        app.logger.error("❌ WEBHOOK: INSERT sonrası order bulunamadı, order_uuid:", order_uuid)
         return jsonify({"message": "Sunucu hatası (kaydedilemedi)"}), 500
 
     order_id = result[0]["id"]
@@ -2091,7 +2166,7 @@ def webhook_yemeksepeti():
     try:
         assign_order_to_courier(order_id)
     except Exception as e:
-        print(f"❌ Sipariş atama hatası (order_id={order_id}): {e}")
+        app.logger.error(f"❌ Sipariş atama hatası (order_id={order_id}): {e}")
         traceback.print_exc()
         # isteğe bağlı: burada delivery_history'ye hata kaydı yazılabilir
 
@@ -2460,15 +2535,21 @@ def health():
 
 if __name__ == "__main__":
     init_db()
-    print("🚀 Flask uygulaması başlatılıyor...")
-    # Firebase durumunu başlatma bloğunda zaten yazdırdık
-    if firebase_app:
-        print("✅ Firebase Admin SDK aktif")
-    else:
-        print("❌ Firebase Admin SDK başlatılamadı. FCM özellikleri çalışmayacak.")
+    app.logger.info("🚀 Flask uygulaması başlatılıyor...")
+    
+    # Firebase durumunu kontrol et
+    check_firebase_setup()
         
-    print("✅ Veritabanı bağlantısı hazır")
-    print("✅ WebSocket servisi aktif")
-    print("✅ Zamanlayıcı servisleri başlatıldı")
+    app.logger.info("✅ Veritabanı bağlantısı hazır")
+    app.logger.info("✅ WebSocket servisi aktif")
+    app.logger.info("✅ Zamanlayıcı servisleri başlatıldı")
 
-    socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
+    # Production için debug modunu kapat
+    socketio.run(
+        app, 
+        host="0.0.0.0", 
+        port=5000, 
+        debug=False, 
+        allow_unsafe_werkzeug=True,
+        log_output=False  # Loglama çakışmasını önlemek için
+    )
