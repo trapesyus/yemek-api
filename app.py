@@ -173,17 +173,26 @@ def validate_fcm_token(fcm_token):
         app.logger.info(f"✅ Token geçerli: {fcm_token[:15]}...")
         return True
         
-    except messaging.UnregisteredError:
-        app.logger.warning(f"⚠️ Token kayıtsız: {fcm_token[:15]}...")
-        return False
-    except messaging.InvalidArgumentError:
-        app.logger.error(f"❌ Token geçersiz: {fcm_token[:15]}...")
-        return False
     except FirebaseError as e:
-        if 'invalid_grant' in str(e).lower():
+        error_str = str(e).lower()
+        
+        # Token kayıtsız
+        if 'unregistered' in error_str or 'not-found' in error_str:
+            app.logger.warning(f"⚠️ Token kayıtsız: {fcm_token[:15]}...")
+            return False
+        
+        # Token geçersiz
+        if 'invalid-argument' in error_str or 'invalid' in error_str:
+            app.logger.error(f"❌ Token geçersiz: {fcm_token[:15]}...")
+            return False
+        
+        # Sunucu saati hatası
+        if 'invalid_grant' in error_str:
             app.logger.error("❌ SUNUCU SAATİ YANLIŞ!")
+        
         app.logger.error(f"❌ Firebase error: {e}")
         return False
+        
     except Exception as e:
         app.logger.error(f"❌ Validation error: {e}")
         return False
@@ -215,14 +224,20 @@ def send_fcm_notification(fcm_token, title, body, data=None):
         app.logger.info(f"✅ Bildirim gönderildi: {response}")
         return True
 
-    except (messaging.UnregisteredError, messaging.InvalidArgumentError):
-        cleanup_invalid_fcm_token(fcm_token)
-        return False
     except FirebaseError as e:
-        if 'invalid_grant' in str(e).lower():
+        error_str = str(e).lower()
+        
+        # Token geçersiz veya kayıtsız - temizle
+        if any(x in error_str for x in ['unregistered', 'not-found', 'invalid-argument']):
+            cleanup_invalid_fcm_token(fcm_token)
+        
+        # Sunucu saati hatası
+        if 'invalid_grant' in error_str:
             app.logger.error("❌ SUNUCU SAATİ HATASI!")
+        
         app.logger.error(f"❌ FCM error: {e}")
         return False
+        
     except Exception as e:
         app.logger.error(f"❌ Send error: {e}")
         return False
