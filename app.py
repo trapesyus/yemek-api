@@ -139,30 +139,31 @@ REPORT_RECIPIENTS = {
 
 # ---------------- Enhanced FCM Bildirim Fonksiyonları ----------------
 def validate_fcm_token(fcm_token):
-    """Basit FCM token validasyonu - dry-run olmadan"""
+    """FCM token'ını validate eder"""
     if not fcm_token:
         return False
-        
+    
     if not firebase_app:
         return False
 
     try:
-        # Token formatını kontrol et (basit regex)
-        import re
-        if not re.match(r'^[a-zA-Z0-9:_-]+$', fcm_token):
-            app.logger.error(f"❌ Token formatı hatalı: {fcm_token[:10]}...")
-            return False
-            
-        # Token uzunluğunu kontrol et (FCM token'ları genellikle 150+ karakter)
-        if len(fcm_token) < 100:
-            app.logger.error(f"❌ Token çok kısa: {len(fcm_token)} karakter")
-            return False
-            
-        app.logger.info(f"✅ Token formatı ve uzunluğu uygun: {fcm_token[:10]}...")
+        # Dry run ile token validation
+        message = messaging.Message(
+            token=fcm_token,
+            data={'test': 'validation'}
+        )
+        # Dry run gerçek bildirim göndermez
+        response = messaging.send(message, dry_run=True)
+        app.logger.info(f"✅ FCM token valid: {fcm_token[:10]}...")
         return True
-        
+    except FirebaseError as e:
+        app.logger.error(f"❌ FCM token invalid ({fcm_token[:10]}...): {e}")
+        return False
     except Exception as e:
-        app.logger.error(f"❌ Basit validasyon hatası: {e}")
+        app.logger.error(f"❌ FCM token validation error: {e}")
+        # Bu hata 'invalid_grant' ise, sunucu saatinizi kontrol edin!
+        if 'invalid_grant' in str(e):
+             app.logger.error("🚨 DİKKAT: 'invalid_grant' hatası alındı. Lütfen sunucu saatinizin (NTP) doğru olduğundan emin olun!")
         return False
 
 
@@ -1315,7 +1316,7 @@ def trigger_monthly_report():
 @app.route("/couriers/<int:courier_id>/fcm-token", methods=["POST"])
 @token_required
 def update_fcm_token(courier_id):
-    """Kuryenin FCM token'ını günceller - ESNEK VERSİYON"""
+    """Kuryenin FCM token'ını günceller ve validate eder"""
     if request.user_role != "admin":
         result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
         if not result or len(result) == 0 or result[0]["user_id"] != request.user_id:
@@ -1328,39 +1329,26 @@ def update_fcm_token(courier_id):
         return jsonify({"message": "FCM token gerekli"}), 400
 
     try:
-        is_valid = False
-        validation_method = ""
+        # Firebase başlatılmışsa validate et, değilse direkt kaydet
+        if firebase_app:
+            is_valid = validate_fcm_token(fcm_token)
+            if not is_valid:
+                return jsonify({"message": "Geçersiz FCM token"}), 400
         
-        # Önce basit validasyon
-        if validate_fcm_token(fcm_token):
-            validation_method = "basit"
-            is_valid = True
-        # Firebase başlatılmışsa ve basit validasyon başarılıysa, detaylı validasyon yap
-        elif firebase_app and validate_fcm_token(fcm_token):
-            validation_method = "firebase"
-            is_valid = True
-        else:
-            app.logger.warning(f"⚠️ FCM token validasyon başarısız: {fcm_token[:10]}...")
-        
-        # Token'ı kaydet (valid olsun veya olmasın, ama log'la)
+        # Token'ı kaydet
         success = execute_write_with_retry(
             "UPDATE couriers SET fcm_token = ? WHERE id = ?",
             (fcm_token, courier_id)
         )
 
         if success:
-            if is_valid:
-                message = f"FCM token güncellendi ve valid ({validation_method} validasyon)"
-                status = "valid"
+            message = "FCM token güncellendi"
+            if firebase_app:
+                message += " ve validate edildi"
             else:
-                message = "FCM token güncellendi ama validasyon başarısız - manuel kontrol önerilir"
-                status = "validation_failed"
+                message += " (Firebase bağlantısı olmadığı için validate edilemedi)"
                 
-            return jsonify({
-                "message": message,
-                "status": status,
-                "validation_method": validation_method
-            })
+            return jsonify({"message": message})
         else:
             return jsonify({"message": "FCM token güncellenemedi"}), 500
 
