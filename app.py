@@ -33,29 +33,24 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # Firebase Admin SDK initialization
 try:
-    # Service account configuration - PRIVATE KEY FORMATI DÜZELTİLDİ
-    service_account_info = {
-        "type": "service_account",
-        "project_id": "peremkurye-a432e",
-        "private_key_id": "dfbdb81f5e5c53fe16f40f897a51efedbc63c19b",
-        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCOOqnem3GMaJKQ\n1+waiaCfnM+/prboO6omC/FWWIRoRQhLtpARwzDysJjIth4vtGKyUOxCUZocYmO/\nlW0IA07q5qyhmtdilvuAdIrHdEXfmCPi5hixRdX6Fsx6w2ePIoaTfLEDOiV3jyNu\nN+DRLleurTklChb2IoHtyanQnUdbLH0EwvfIHa6w5WHRxzcWH2B3giIyL7Se/YM9\nwErwjdTVbM+cdVfqXp6sH8VS3WpMLLAfVynjn8MOwU/NKzjuz2IVhg7hbjRXXhE0\nKtGk0SCR8/R/JSAePF/JZr3IXRowRCw2fb5w8ZZX6tZ3y62C+AIaSqW3/rDXzYDE\nRPTNNLNvAgMBAAECggEABYY2ydwsxWDcbH7Of1tgH0L2eMGvcga7PZ4SIiHvBqPD\nxjkRkHcN5CdCz+zu8Dhn6vgkrRDBVR/nMu5JXVnPi2UpSF+cxQoLO7qLF2MnQZ+F\nqU75n40QWhXfnFcRoygapQjfUTpFcUbgf+vwsf9ETZcR1KP3L1k4xbUjAOTS/DIH\n1v+j5sXpXhDTqfS3h+k6lU8I5HXVBi/5EYHyIAIJnOcAQWD2Irm9j0BF1JgfCIBV\n2tUrcf3UhDHUlmI5MMtHKNz77HQD1/eAUXLcZ9s0fAKNsy6OwqN77cdTj/fkY2p1\nz1HDgUxv+Q9+enTHnEI5HFIaD3NPAYYAASJwbWuUCQKBgQDEBhP1MTquTpM+WygB\nNlASKzDKHsT/TttDhguPaRIDO3+GVYMN8gvYizQlpemyigtxCr679vVqV4h0X34H\ng9okJBaS62JLj8YuClXOrnWYECF6XEYx223VBTKy2rdPnVbawmKXHYFCl2/QRqe+\n8ZDJuBrwrvvVsj44OPZWFydiNwKBgQC5vwZqSRCLoAAzk4w0QJT53brFZUIHhtgN\nlenFCaeay//GcrkDWfBJn85MqzJo//5QHC+bnf4FCg59LFNGvJ+pcBanAuAU1Lu2\nNry9GEnmN2WW4B3xgn46/P/c8Dd7F8t0LBc/whI3itR6Gnx6Dd/3nL8uhJ/ZgRPU\n00U14aX8iQKBgAeRPIAAsIU+H00O89JoKFsrM6z51x0MDEblC9kzczCQwXGMJ40I\nRRDM/uxdJVJxJdPtWEOlWwAJ9QiZDyJ3Ipq2kfCGCbtlB3+LgpiB/6QpK0GwAj22\nfNz2YGirLNxz9IBpdKjkyLKrafOeZqdmZ/KBmvijqLEtOl2tRUU5i5mtAoGATTIT\n03ZcNvsfOlA287xnbdT1+3XS1Ff5UOQeDLKvgokH2wzw0XC+iYqt7XU09Sh3JAoi\nyxUFbki4rtMOJRbdcEjSUUTDpkSnYtoq5JfElrYtNWAdcbLfDVr6Z3M6S6EfAEAW\nxXu9oHHFTp3VX9CGZV0yo32hBX88o7XOTM9j8akCgYBf6R78NW6QFDHINTD8NH17\nrc8qMzvA8xsVitUxrqRxpq5+MIB6fJYDOcajZdUhhmJ9I+E4IGb3MXkLBGQbS8tk\ndCl7xbN5Mpuh5Nq8fmzsE9bGAJUQSgooF9GddeuQjdlBTCsSoPdCDXGsMfmZcqLA\nRGceOxRdN1ME+iUlQJS1Uw==\n-----END PRIVATE KEY-----",
-        "client_email": "firebase-adminsdk-fbsvc@peremkurye-a432e.iam.gserviceaccount.com",
-        "client_id": "108595809281807082251",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40peremkurye-a432e.iam.gserviceaccount.com",
-        "universe_domain": "googleapis.com"
-    }
-    
-    # Initialize Firebase Admin SDK
-    cred = credentials.Certificate(service_account_info)
+    # Service account configuration (Best Practice: Load from file)
+    # 1. Firebase Proje Ayarları > Hizmet Hesapları'ndan yeni bir özel anahtar oluşturun.
+    # 2. Oluşturulan JSON dosyasını indirin ve adını 'service-account-key.json' olarak değiştirin.
+    # 3. Bu dosyayı 'app.py' ile aynı dizine koyun.
+    # DİKKAT: Bu dosyayı ASLA herkese açık bir yere (örn. GitHub) yüklemeyin!
+    cred = credentials.Certificate("service-account.json")
     firebase_app = firebase_admin.initialize_app(cred)
     print("✅ Firebase Admin SDK başarıyla başlatıldı")
-    
+
+except FileNotFoundError:
+    print("❌ Firebase Admin SDK başlatma hatası: 'service-account-key.json' dosyası bulunamadı.")
+    print("   Lütfen Firebase projenizden bir hizmet hesabı anahtarı indirip bu isimle kaydedin.")
+    firebase_app = None
 except Exception as e:
     print(f"❌ Firebase Admin SDK başlatma hatası: {e}")
+    print("   Sunucunuzun saatinin (NTP) doğru olduğundan emin olun. 'invalid_grant' hatası genellikle saat farkından kaynaklanır.")
     firebase_app = None
+
 
 # Kurye WebSocket bağlantıları için sözlük
 courier_connections = {}
@@ -74,47 +69,46 @@ REPORT_RECIPIENTS = {
     "email": ["admin@firma.com", "rapor@firma.com"]  # Email adreslerinizle değiştirin
 }
 
+
 # ---------------- Enhanced FCM Bildirim Fonksiyonları ----------------
 def validate_fcm_token(fcm_token):
-    """FCM token'ını validate eder - GÜNCELLENDİ"""
+    """FCM token'ını validate eder"""
     if not fcm_token:
         return False
-        
+    
+    if not firebase_app:
+        print("❌ FCM validasyonu yapılamadı: Firebase Admin SDK başlatılmamış.")
+        return False
+
     try:
-        # Basit format kontrolü - Firebase API'sini kullanmadan önce
-        if not isinstance(fcm_token, str) or len(fcm_token) < 50:
-            print(f"❌ FCM token formatı geçersiz: {fcm_token[:20]}...")
-            return False
-            
-        # Firebase dry-run testi - HATA YÖNETİMİ İYİLEŞTİRİLDİ
+        # Dry run ile token validation
         message = messaging.Message(
             token=fcm_token,
-            data={'test': 'validation', 'timestamp': str(int(time.time()))}
+            data={'test': 'validation'}
         )
-        
-        try:
-            response = messaging.send(message, dry_run=True)
-            print(f"✅ FCM token valid: {fcm_token[:10]}...")
-            return True
-        except FirebaseError as e:
-            error_str = str(e)
-            if 'NOT_FOUND' in error_str or 'INVALID_ARGUMENT' in error_str:
-                print(f"❌ FCM token invalid ({fcm_token[:10]}...): {e}")
-                return False
-            else:
-                # Diğer Firebase hataları (network, quota vs.) için token'ı geçerli kabul et
-                print(f"⚠️ FCM validation warning ({fcm_token[:10]}...): {e}")
-                return True
-                
+        # Dry run gerçek bildirim göndermez
+        response = messaging.send(message, dry_run=True)
+        print(f"✅ FCM token valid: {fcm_token[:10]}...")
+        return True
+    except FirebaseError as e:
+        print(f"❌ FCM token invalid ({fcm_token[:10]}...): {e}")
+        return False
     except Exception as e:
         print(f"❌ FCM token validation error: {e}")
-        # Validation hatasında bile token'ı kaydetmeye izin ver
-        return True
+        # Bu hata 'invalid_grant' ise, sunucu saatinizi kontrol edin!
+        if 'invalid_grant' in str(e):
+             print("🚨 DİKKAT: 'invalid_grant' hatası alındı. Lütfen sunucu saatinizin (NTP) doğru olduğundan emin olun!")
+        return False
+
 
 def send_fcm_notification(fcm_token, title, body, data=None):
-    """FCM ile push bildirim gönderir - HATA YÖNETİMİ İYİLEŞTİRİLDİ"""
+    """FCM ile push bildirim gönderir - Firebase Admin SDK kullanarak"""
     if not fcm_token:
         print("⚠️ FCM token bulunamadı")
+        return False
+        
+    if not firebase_app:
+        print("❌ FCM gönderilemedi: Firebase Admin SDK başlatılmamış.")
         return False
 
     try:
@@ -124,7 +118,7 @@ def send_fcm_notification(fcm_token, title, body, data=None):
             body=body
         )
 
-        # Message oluştur 
+        # Message oluştur
         message = messaging.Message(
             token=fcm_token,
             notification=notification,
@@ -153,13 +147,15 @@ def send_fcm_notification(fcm_token, title, body, data=None):
 
     except FirebaseError as e:
         print(f"❌ FCM gönderme hatası: {e}")
-        error_str = str(e)
-        if 'NOT_FOUND' in error_str or 'INVALID_ARGUMENT' in error_str:
+        if 'invalid_grant' in str(e):
+            print("🚨 DİKKAT: 'invalid_grant' hatası alındı. Lütfen sunucu saatinizin (NTP) doğru olduğundan emin olun!")
+        if 'NOT_FOUND' in str(e) or 'INVALID_ARGUMENT' in str(e):
             cleanup_invalid_fcm_token(fcm_token)
         return False
     except Exception as e:
         print(f"❌ Beklenmeyen FCM hatası: {e}")
         return False
+
 
 def cleanup_invalid_fcm_token(invalid_token):
     """Geçersiz FCM token'ını veritabanından temizler"""
@@ -175,6 +171,7 @@ def cleanup_invalid_fcm_token(invalid_token):
     except Exception as e:
         print(f"❌ FCM token temizleme hatası: {e}")
 
+
 # ---------------- DB ----------------
 def get_conn():
     conn = sqlite3.connect(DB_NAME, timeout=30)
@@ -182,16 +179,19 @@ def get_conn():
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def row_to_dict(row):
     if not row:
         return None
     return {k: row[k] for k in row.keys()}
+
 
 def column_exists(conn, table, column):
     cur = conn.cursor()
     cur.execute(f"PRAGMA table_info({table})")
     cols = [r[1] for r in cur.fetchall()]
     return column in cols
+
 
 def init_db():
     conn = get_conn()
@@ -334,6 +334,7 @@ def init_db():
 
     conn.close()
 
+
 # ---------------- Günlük Kurye Performans Sıfırlama ----------------
 def reset_daily_orders():
     """Her gün gece yarısı kuryelerin günlük sipariş sayılarını sıfırla"""
@@ -347,6 +348,7 @@ def reset_daily_orders():
     except Exception as e:
         print(f"❌ Günlük sıfırlama hatası: {e}")
 
+
 # ---------------- Aylık Kurye Performans Sıfırlama ----------------
 def reset_monthly_orders():
     """Her ayın başında kuryelerin aylık sipariş sayılarını sıfırla"""
@@ -359,6 +361,7 @@ def reset_monthly_orders():
         print("✅ Aylık kurye sipariş sayıları sıfırlandı")
     except Exception as e:
         print(f"❌ Aylık sıfırlama hatası: {e}")
+
 
 # ---------------- Email Gönderme Fonksiyonu ----------------
 def send_email(to_email, subject, html_content):
@@ -386,6 +389,7 @@ def send_email(to_email, subject, html_content):
     except Exception as e:
         print(f"❌ Email gönderme hatası ({to_email}): {e}")
         return False
+
 
 # ---------------- Aylık Rapor Fonksiyonları ----------------
 def generate_monthly_report():
@@ -506,6 +510,7 @@ def generate_monthly_report():
             'error': str(e)
         }
 
+
 def format_report_for_email(report_data):
     """Raporu email formatında formatlar"""
     try:
@@ -604,6 +609,7 @@ def format_report_for_email(report_data):
         print(f"❌ Email formatlama hatası: {e}")
         return f"<p>Rapor formatlama hatası: {str(e)}</p>", "Rapor Hatası"
 
+
 def distribute_monthly_report():
     """Aylık raporu Email ile dağıtır ve verileri sıfırlar"""
     try:
@@ -651,6 +657,7 @@ def distribute_monthly_report():
             'error': str(e)
         }
 
+
 # ---------------- Aylık Rapor Zamanlayıcı ----------------
 def schedule_monthly_report():
     """Her ayın son günü saat 23:00'te rapor gönderimini planlar"""
@@ -668,16 +675,19 @@ def schedule_monthly_report():
     except Exception as e:
         print(f"❌ Zamanlayıcı ekleme hatası: {e}")
 
+
 # Zamanlayıcıyı başlat
 scheduler.add_job(reset_daily_orders, 'cron', hour=0, minute=0)  # Her gün gece yarısı
 schedule_monthly_report()
 scheduler.start()
+
 
 # ---------------- WebSocket Event Handlers ----------------
 @socketio.on('connect')
 def handle_connect():
     print('✅ Client connected: ' + request.sid)
     emit('connection_response', {'data': 'Bağlantı başarılı'})
+
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -688,6 +698,7 @@ def handle_disconnect():
             del courier_connections[courier_id]
             print(f'❌ Courier {courier_id} bağlantısı kesildi')
             break
+
 
 @socketio.on('courier_register')
 def handle_courier_register(data):
@@ -703,6 +714,7 @@ def handle_courier_register(data):
     except Exception as e:
         print(f'❌ Kurye kayıt hatası: {e}')
         emit('registration_error', {'message': 'Kayıt sırasında hata oluştu'})
+
 
 # ---------------- Bildirim Fonksiyonları ----------------
 def notify_courier_new_order(courier_id, order_data):
@@ -748,6 +760,7 @@ def notify_courier_new_order(courier_id, order_data):
         print(f"❌ Bildirim gönderme hatası: {e}")
         return False
 
+
 def notify_courier_reassignment(courier_id, order_id, action):
     """Kuryeye yeniden atama bildirimi gönderir"""
     try:
@@ -792,6 +805,7 @@ def notify_courier_reassignment(courier_id, order_id, action):
         print(f"❌ Yeniden atama bildirimi hatası: {e}")
         return False
 
+
 # ---------------- Veritabanı İşlemleri İçin Yardımcı Fonksiyonlar ----------------
 def execute_with_retry(query, params=None, max_retries=5):
     """Veritabanı işlemlerini belirli sayıda deneme yapar"""
@@ -814,6 +828,7 @@ def execute_with_retry(query, params=None, max_retries=5):
                 raise e
     return None
 
+
 def execute_write_with_retry(query, params=None, max_retries=5):
     """Yazma işlemleri için belirli sayıda deneme yapar"""
     for attempt in range(max_retries):
@@ -834,9 +849,11 @@ def execute_write_with_retry(query, params=None, max_retries=5):
                 raise e
     return False
 
+
 # ---------------- Password & JWT ----------------
 def hash_password(password: str) -> bytes:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+
 
 def _normalize_hash(h):
     if isinstance(h, memoryview):
@@ -844,6 +861,7 @@ def _normalize_hash(h):
     if isinstance(h, str):
         return h.encode("utf-8")
     return h
+
 
 def check_password(password: str, hashed) -> bool:
     if not hashed:
@@ -853,6 +871,7 @@ def check_password(password: str, hashed) -> bool:
     except Exception:
         return False
 
+
 def generate_token(user_id: int, role: str) -> str:
     payload = {"user_id": user_id, "role": role, "exp": datetime.utcnow() + timedelta(hours=TOKEN_EXP_HOURS)}
     token = jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
@@ -860,8 +879,10 @@ def generate_token(user_id: int, role: str) -> str:
         token = token.decode("utf-8")
     return token
 
+
 def decode_token(token: str):
     return jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
+
 
 # ---------------- Auth decorators ----------------
 def token_required(f):
@@ -885,6 +906,7 @@ def token_required(f):
 
     return wrapped
 
+
 def admin_required(f):
     @wraps(f)
     @token_required
@@ -894,6 +916,7 @@ def admin_required(f):
         return f(*args, **kwargs)
 
     return wrapped
+
 
 def courier_required(f):
     @wraps(f)
@@ -905,6 +928,7 @@ def courier_required(f):
 
     return wrapped
 
+
 def restaurant_required(f):
     @wraps(f)
     @token_required
@@ -914,6 +938,7 @@ def restaurant_required(f):
         return f(*args, **kwargs)
 
     return wrapped
+
 
 # ---------------- Mahalle ve Dağıtım İşlemleri ----------------
 def extract_neighborhood(address):
@@ -939,6 +964,7 @@ def extract_neighborhood(address):
 
     return None
 
+
 def get_or_create_neighborhood(neighborhood_name):
     if not neighborhood_name:
         return None
@@ -962,6 +988,7 @@ def get_or_create_neighborhood(neighborhood_name):
 
     return None
 
+
 def ensure_courier_performance(courier_id):
     # Kurye performans kaydı var mı kontrol et
     result = execute_with_retry("SELECT 1 FROM courier_performance WHERE courier_id = ?", (courier_id,))
@@ -971,6 +998,7 @@ def ensure_courier_performance(courier_id):
             "INSERT INTO courier_performance (courier_id, last_assigned) VALUES (?, ?)",
             (courier_id, datetime.utcnow().isoformat())
         )
+
 
 def is_courier_in_cooldown(courier_id, neighborhood_id):
     """Kuryenin aynı mahallede cooldown süresinde olup olmadığını kontrol et"""
@@ -987,6 +1015,7 @@ def is_courier_in_cooldown(courier_id, neighborhood_id):
                 return True  # Hala cooldown süresinde
     return False
 
+
 def set_courier_cooldown(courier_id, neighborhood_id):
     """Kuryeyi 3 dakika cooldown'a al"""
     cooldown_until = (datetime.utcnow() + timedelta(minutes=3)).isoformat()
@@ -994,6 +1023,7 @@ def set_courier_cooldown(courier_id, neighborhood_id):
         "UPDATE courier_performance SET cooldown_until = ?, current_neighborhood_id = ? WHERE courier_id = ?",
         (cooldown_until, neighborhood_id, courier_id)
     )
+
 
 def assign_order_to_courier(order_id):
     # Sipariş bilgilerini al
@@ -1183,6 +1213,7 @@ def assign_order_to_courier(order_id):
 
     return False
 
+
 # ---------------- Manuel Rapor Tetikleme Endpoint'i ----------------
 @app.route("/admin/trigger-monthly-report", methods=["POST"])
 @admin_required
@@ -1214,8 +1245,9 @@ def trigger_monthly_report():
             "error": str(e)
         }), 500
 
-# ---------------- FCM Token Yönetimi Endpoint'leri - GÜNCELLENDİ ----------------
-@app.route("/couriers/<int:courier_id>/fcm-token", methods=["POST", "PATCH"])  # PATCH EKLENDİ
+
+# ---------------- FCM Token Yönetimi Endpoint'leri ----------------
+@app.route("/couriers/<int:courier_id>/fcm-token", methods=["POST"])
 @token_required
 def update_fcm_token(courier_id):
     """Kuryenin FCM token'ını günceller ve validate eder"""
@@ -1230,9 +1262,10 @@ def update_fcm_token(courier_id):
     if not fcm_token:
         return jsonify({"message": "FCM token gerekli"}), 400
 
-    # Token'ı validate et - HATA YÖNETİMİ İYİLEŞTİRİLDİ
-    is_valid = validate_fcm_token(fcm_token)
-    
+    # Token'ı validate et
+    if not validate_fcm_token(fcm_token):
+        return jsonify({"message": "Geçersiz FCM token"}), 400
+
     try:
         success = execute_write_with_retry(
             "UPDATE couriers SET fcm_token = ? WHERE id = ?",
@@ -1240,16 +1273,14 @@ def update_fcm_token(courier_id):
         )
 
         if success:
-            if is_valid:
-                return jsonify({"message": "FCM token güncellendi ve validate edildi"})
-            else:
-                return jsonify({"message": "FCM token güncellendi, ancak validate edilemedi"})
+            return jsonify({"message": "FCM token güncellendi ve validate edildi"})
         else:
             return jsonify({"message": "FCM token güncellenemedi"}), 500
 
     except Exception as e:
         print(f"❌ FCM token güncelleme hatası: {e}")
         return jsonify({"message": "Sunucu hatası"}), 500
+
 
 @app.route("/admin/fcm/validate-all-tokens", methods=["POST"])
 @admin_required
@@ -1259,31 +1290,32 @@ def validate_all_fcm_tokens():
         result = execute_with_retry("SELECT id, fcm_token FROM couriers WHERE fcm_token IS NOT NULL")
         if not result:
             return jsonify({"message": "Validasyon için FCM token bulunamadı"})
-        
+
         invalid_tokens = []
         valid_count = 0
-        
+
         for row in result:
             courier = row_to_dict(row)
             fcm_token = courier.get('fcm_token')
-            
+
             if fcm_token and validate_fcm_token(fcm_token):
                 valid_count += 1
             else:
                 invalid_tokens.append(fcm_token)
                 # Geçersiz token'ı temizle
                 cleanup_invalid_fcm_token(fcm_token)
-        
+
         return jsonify({
             "message": "FCM token validasyonu tamamlandı",
             "valid_tokens": valid_count,
             "invalid_tokens_cleaned": len(invalid_tokens),
             "invalid_tokens_list": invalid_tokens
         })
-        
+
     except Exception as e:
         print(f"❌ Toplu FCM validasyon hatası: {e}")
         return jsonify({"message": "Validasyon sırasında hata oluştu"}), 500
+
 
 # ---------------- Auth: register/login ----------------
 @app.route("/auth/register", methods=["POST"])
@@ -1412,6 +1444,7 @@ def auth_register():
 
     return jsonify({"message": f"{role} oluşturuldu", "user": user_resp}), 201
 
+
 @app.route("/auth/login", methods=["POST"])
 def auth_login():
     """
@@ -1456,6 +1489,7 @@ def auth_login():
         user_out["restaurant_id"] = user_row["restaurant_id"]
 
     return jsonify({"token": token, "user": user_out})
+
 
 # ---------------- Admin creates courier (explicit) ----------------
 @app.route("/admin/couriers", methods=["POST"])
@@ -1527,6 +1561,7 @@ def admin_create_courier():
     except sqlite3.IntegrityError as e:
         return jsonify({"message": "IntegrityError", "error": str(e)}), 400
 
+
 # ---------------- Current user info ----------------
 @app.route("/me", methods=["GET"])
 @token_required
@@ -1551,6 +1586,7 @@ def me():
                 user["restaurant"] = row_to_dict(result[0])
 
     return jsonify(user)
+
 
 # ---------------- Admin Courier Reassignment ----------------
 @app.route("/admin/orders/<int:order_id>/reassign", methods=["POST"])
@@ -1685,12 +1721,14 @@ def admin_reassign_order(order_id):
         traceback.print_exc()
         return jsonify({"message": "Sipariş yeniden atanırken hata oluştu", "error": str(e)}), 500
 
+
 # ---------------- Users management (admin) ----------------
 @app.route("/users", methods=["GET"])
 @admin_required
 def list_users():
     result = execute_with_retry("SELECT id, username, role, created_at, restaurant_id FROM users")
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
 
 @app.route("/users/<int:user_id>", methods=["PATCH"])
 @admin_required
@@ -1721,6 +1759,7 @@ def update_user(user_id):
 
     return jsonify({"message": "Kullanıcı güncellendi"})
 
+
 @app.route("/users/<int:user_id>", methods=["DELETE"])
 @admin_required
 def delete_user(user_id):
@@ -1729,6 +1768,7 @@ def delete_user(user_id):
     execute_write_with_retry("DELETE FROM users WHERE id = ?", (user_id,))
     return jsonify({"message": "Kullanıcı silindi (ve bağlı kurye kaydı kaldırıldı)"})
 
+
 # ---------------- Couriers listing & CRUD ----------------
 @app.route("/couriers", methods=["GET"])
 @admin_required
@@ -1736,6 +1776,7 @@ def admin_list_couriers():
     result = execute_with_retry(
         "SELECT id, user_id, first_name, last_name, email, phone, status, created_at, fcm_token FROM couriers")
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
 
 @app.route("/couriers/<int:courier_id>", methods=["PATCH"])
 @admin_required
@@ -1763,11 +1804,13 @@ def admin_update_courier(courier_id):
     except sqlite3.IntegrityError as e:
         return jsonify({"message": "Integrity error", "error": str(e)}), 400
 
+
 @app.route("/couriers/<int:courier_id>", methods=["DELETE"])
 @admin_required
 def admin_delete_courier(courier_id):
     execute_write_with_retry("DELETE FROM couriers WHERE id = ?", (courier_id,))
     return jsonify({"message": f"Kurye {courier_id} silindi"})
+
 
 # ---------------- Courier actions (self) ----------------
 @app.route("/couriers/<int:courier_id>/status", methods=["PATCH"])
@@ -1787,6 +1830,7 @@ def courier_update_status(courier_id):
     execute_write_with_retry("UPDATE couriers SET status = ? WHERE id = ?", (status, courier_id))
     return jsonify({"message": "Kurye durumu güncellendi", "status": status})
 
+
 @app.route("/couriers/<int:courier_id>/orders", methods=["GET"])
 @token_required
 def courier_get_orders(courier_id):
@@ -1799,6 +1843,7 @@ def courier_get_orders(courier_id):
     result = execute_with_retry("SELECT * FROM orders WHERE courier_id = ? AND status IN ('yeni','teslim alındı')",
                                 (courier_id,))
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
 
 @app.route("/couriers/<int:courier_id>/orders/<int:order_id>/pickup", methods=["POST"])
 @token_required
@@ -1827,6 +1872,7 @@ def courier_pickup_order(courier_id, order_id):
     )
 
     return jsonify({"message": "Sipariş teslim alındı"})
+
 
 @app.route("/couriers/<int:courier_id>/orders/<int:order_id>/deliver", methods=["POST"])
 @token_required
@@ -1861,6 +1907,7 @@ def courier_deliver_order(courier_id, order_id):
     )
 
     return jsonify({"message": "Sipariş teslim edildi"})
+
 
 @app.route("/couriers/<int:courier_id>/orders/<int:order_id>/fail", methods=["POST"])
 @token_required
@@ -1901,6 +1948,7 @@ def courier_fail_order(courier_id, order_id):
 
     return jsonify({"message": "Teslimat başarısız olarak işaretlendi"})
 
+
 @app.route("/couriers/<int:courier_id>/delivery-history", methods=["GET"])
 @token_required
 def courier_delivery_history(courier_id):
@@ -1919,6 +1967,7 @@ def courier_delivery_history(courier_id):
     """, (courier_id,))
 
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
 
 # ---------------- Restaurant actions ----------------
 @app.route("/restaurants/orders", methods=["GET"])
@@ -1949,6 +1998,7 @@ def restaurant_get_orders():
 
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
 
+
 @app.route("/restaurants/orders/<int:order_id>", methods=["GET"])
 @restaurant_required
 def restaurant_get_order(order_id):
@@ -1978,6 +2028,7 @@ def restaurant_get_order(order_id):
         return jsonify({"message": "Sipariş bulunamadı"}), 404
 
     return jsonify(row_to_dict(result[0]))
+
 
 # ---------------- Orders (webhook + admin) ----------------
 @app.route("/webhooks/yemeksepeti", methods=["POST"])
@@ -2047,6 +2098,7 @@ def webhook_yemeksepeti():
     # 4) Başarılı cevap gönder
     return jsonify({"message": "Sipariş alındı", "order_uuid": order_uuid}), 201
 
+
 @app.route("/orders", methods=["GET"])
 @admin_required
 def admin_list_orders():
@@ -2057,6 +2109,7 @@ def admin_list_orders():
         result = execute_with_retry("SELECT * FROM orders ORDER BY created_at DESC")
 
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
 
 @app.route("/orders/<int:order_id>", methods=["PATCH"])
 @admin_required
@@ -2083,11 +2136,13 @@ def admin_patch_order(order_id):
     execute_write_with_retry(query, values)
     return jsonify({"message": "Sipariş güncellendi"})
 
+
 @app.route("/orders/<int:order_id>", methods=["DELETE"])
 @admin_required
 def admin_delete_order(order_id):
     execute_write_with_retry("DELETE FROM orders WHERE id = ?", (order_id,))
     return jsonify({"message": "Sipariş silindi"})
+
 
 # ---------------- Restaurant Management (admin) ----------------
 @app.route("/restaurants", methods=["GET"])
@@ -2095,6 +2150,7 @@ def admin_delete_order(order_id):
 def list_restaurants():
     result = execute_with_retry("SELECT * FROM restaurants ORDER BY name")
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
 
 @app.route("/restaurants", methods=["POST"])
 @admin_required
@@ -2180,6 +2236,7 @@ def create_restaurant():
             pass
         return jsonify({"message": "Sunucu hatası", "error": str(e)}), 500
 
+
 @app.route("/restaurants/<restaurant_id>", methods=["PATCH"])
 @admin_required
 def update_restaurant(restaurant_id):
@@ -2203,6 +2260,7 @@ def update_restaurant(restaurant_id):
     except sqlite3.IntegrityError as e:
         return jsonify({"message": "Integrity error", "error": str(e)}), 400
 
+
 @app.route("/restaurants/<restaurant_id>", methods=["DELETE"])
 @admin_required
 def delete_restaurant(restaurant_id):
@@ -2211,12 +2269,14 @@ def delete_restaurant(restaurant_id):
     execute_write_with_retry("DELETE FROM users WHERE restaurant_id = ?", (restaurant_id,))
     return jsonify({"message": "Restoran silindi"})
 
+
 # ---------------- Neighborhood Management ----------------
 @app.route("/neighborhoods", methods=["GET"])
 @token_required  # Sadece genel token gerekiyor - GET için
 def list_neighborhoods():
     result = execute_with_retry("SELECT * FROM neighborhoods ORDER BY name")
     return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
 
 @app.route("/neighborhoods", methods=["POST"])
 @admin_required  # Admin token gerekiyor - POST için
@@ -2245,11 +2305,13 @@ def create_neighborhood():
     except sqlite3.IntegrityError:
         return jsonify({"message": "Bu isimde mahalle zaten var"}), 400
 
+
 @app.route("/neighborhoods/<int:neighborhood_id>", methods=["DELETE"])
 @admin_required  # Admin token gerekiyor - DELETE için
 def delete_neighborhood(neighborhood_id):
     execute_write_with_retry("DELETE FROM neighborhoods WHERE id = ?", (neighborhood_id,))
     return jsonify({"message": "Mahalle silindi"})
+
 
 # ---------------- Manual Order Assignment ----------------
 @app.route("/admin/assign-orders", methods=["POST"])
@@ -2268,6 +2330,7 @@ def manual_assign_orders():
 
     return jsonify({"message": f"{assigned_count} sipariş kuryelere atandı"})
 
+
 # ---------------- Courier Performance Reset ----------------
 @app.route("/admin/couriers/<int:courier_id>/reset-performance", methods=["POST"])
 @admin_required
@@ -2275,6 +2338,7 @@ def reset_courier_performance(courier_id):
     execute_write_with_retry("UPDATE courier_performance SET daily_orders = 0, total_orders = 0 WHERE courier_id = ?",
                              (courier_id,))
     return jsonify({"message": "Kurye performansı sıfırlandı"})
+
 
 # ---------------- Admin reports ----------------
 @app.route("/admin/reports/orders", methods=["GET"])
@@ -2387,17 +2451,24 @@ def admin_reports_orders():
         "period": {"start": start, "end": end}
     })
 
+
 # ---------------- Health ----------------
 @app.route("/")
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
 
+
 if __name__ == "__main__":
     init_db()
     print("🚀 Flask uygulaması başlatılıyor...")
-    print("✅ Firebase Admin SDK aktif")
+    # Firebase durumunu başlatma bloğunda zaten yazdırdık
+    if firebase_app:
+        print("✅ Firebase Admin SDK aktif")
+    else:
+        print("❌ Firebase Admin SDK başlatılamadı. FCM özellikleri çalışmayacak.")
+        
     print("✅ Veritabanı bağlantısı hazır")
     print("✅ WebSocket servisi aktif")
     print("✅ Zamanlayıcı servisleri başlatıldı")
-    
+
     socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
