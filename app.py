@@ -751,20 +751,19 @@ def update_fcm_token(courier_id):
         return jsonify({"message": "FCM token gerekli"}), 400
 
     try:
+        # GEÇİCİ FIX: Validation'ı atla, sadece kaydet
+        # TODO: Firebase key sorununu çözdükten sonra validation'ı geri ekle
         if firebase_app:
-            app.logger.info(f"Token validation: {fcm_token[:15]}...")
-            is_valid = validate_fcm_token(fcm_token)
-            
-            if not is_valid:
-                return jsonify({
-                    "message": "Geçersiz FCM token",
-                    "error": "Validation başarısız. Sunucu UTC olmalı, service account key yenileyin."
-                }), 400
+            app.logger.warning(f"⚠️ Token kaydediliyor (validation atlandı): {fcm_token[:15]}...")
+            # is_valid = validate_fcm_token(fcm_token)
+            # if not is_valid:
+            #     return jsonify({"message": "Geçersiz FCM token"}), 400
         
+        # Token'ı kaydet
         success = execute_write_with_retry("UPDATE couriers SET fcm_token = ? WHERE id = ?", (fcm_token, courier_id))
 
         if success:
-            msg = "Token güncellendi" + (" ve validate edildi" if firebase_app else "")
+            msg = "Token kaydedildi (validation geçici olarak devre dışı)"
             return jsonify({"message": msg})
         else:
             return jsonify({"message": "Token güncellenemedi"}), 500
