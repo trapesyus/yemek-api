@@ -170,9 +170,9 @@ scheduler = BackgroundScheduler()
 
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-EMAIL_USERNAME = "your_email@gmail.com"
-EMAIL_PASSWORD = "your_app_password"
-REPORT_RECIPIENTS = {"email": ["admin@firma.com"]}
+EMAIL_USERNAME = "hediyecennetti@gmail.com"
+EMAIL_PASSWORD = "brvl ucry jgml qnsn"
+REPORT_RECIPIENTS = {"email": ["emrulllahtoprak009@gmail.com"]}
 
 # FCM Fonksiyonları - TAMAMEN YENİ
 def validate_fcm_token(fcm_token):
