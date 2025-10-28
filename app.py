@@ -1,4 +1,4 @@
-# app.py - KOMPLE DÜZELTİLMİŞ VERSİYON
+# app.py - İSTANBUL SAATİ DÜZENLENMİŞ VERSİYON
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit, join_room
 from datetime import datetime, timedelta
@@ -17,6 +17,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from functools import wraps
 from apscheduler.schedulers.background import BackgroundScheduler
+import pytz  # Zaman dilimleri için eklendi
 
 # Firebase Admin SDK imports
 try:
@@ -35,7 +36,24 @@ SECRET_KEY = "çok_gizli_bir_anahtar"
 JWT_ALGORITHM = "HS256"
 TOKEN_EXP_HOURS = 8
 
+# Zaman dilimleri - EKLENDİ
+UTC_TIMEZONE = pytz.UTC
+IST_TIMEZONE = pytz.timezone('Europe/Istanbul')
+
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+
+# Zaman fonksiyonları - EKLENDİ
+def get_utc_time():
+    """UTC zamanını döndürür"""
+    return datetime.now(UTC_TIMEZONE)
+
+def get_istanbul_time():
+    """İstanbul zamanını döndürür"""
+    return datetime.now(IST_TIMEZONE)
+
+def get_istanbul_time_string():
+    """İstanbul zamanını string olarak döndürür"""
+    return get_istanbul_time().isoformat()
 
 # Loglama sistemini kur
 def setup_logging():
@@ -443,7 +461,8 @@ def send_email(to_email, subject, html_content):
 
 def generate_monthly_report():
     try:
-        today = datetime.utcnow()
+        # Raporlar için UTC kullanmaya devam ediyoruz
+        today = get_utc_time()
         first_day = today.replace(day=1)
         last_day = first_day - timedelta(days=1)
         first_prev = last_day.replace(day=1)
@@ -477,7 +496,7 @@ def format_report_for_email(report_data):
     html = f"""<html><body>
     <h1>Aylık Rapor</h1>
     <p>Dönem: {period['start']} - {period['end']}</p>
-    <p>Oluşturulma: {datetime.utcnow().isoformat()} UTC</p>
+    <p>Oluşturulma: {get_utc_time().isoformat()} UTC</p>
     </body></html>"""
     
     return html, subject
@@ -595,7 +614,8 @@ def check_password(password, hashed):
         return False
 
 def generate_token(user_id, role):
-    payload = {"user_id": user_id, "role": role, "exp": datetime.utcnow() + timedelta(hours=TOKEN_EXP_HOURS)}
+    # Token için UTC kullanmaya devam ediyoruz
+    payload = {"user_id": user_id, "role": role, "exp": get_utc_time() + timedelta(hours=TOKEN_EXP_HOURS)}
     token = jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
     return token.decode("utf-8") if isinstance(token, bytes) else token
 
@@ -671,17 +691,18 @@ def get_or_create_neighborhood(name):
     result = execute_with_retry("SELECT id FROM neighborhoods WHERE name = ?", (name,))
     if result and len(result) > 0:
         return result[0]["id"]
-    execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)", (name, datetime.utcnow().isoformat()))
+    # Mahalle oluştururken UTC kullanıyoruz
+    execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)", (name, get_utc_time().isoformat()))
     result = execute_with_retry("SELECT id FROM neighborhoods WHERE name = ?", (name,))
     return result[0]["id"] if result and len(result) > 0 else None
 
 def ensure_courier_performance(courier_id):
     result = execute_with_retry("SELECT 1 FROM courier_performance WHERE courier_id = ?", (courier_id,))
     if not result or len(result) == 0:
-        execute_write_with_retry("INSERT INTO courier_performance (courier_id, last_assigned) VALUES (?, ?)", (courier_id, datetime.utcnow().isoformat()))
+        execute_write_with_retry("INSERT INTO courier_performance (courier_id, last_assigned) VALUES (?, ?)", (courier_id, get_utc_time().isoformat()))
 
 def set_courier_cooldown(courier_id, neighborhood_id):
-    cooldown = (datetime.utcnow() + timedelta(minutes=3)).isoformat()
+    cooldown = (get_utc_time() + timedelta(minutes=3)).isoformat()
     execute_write_with_retry("UPDATE courier_performance SET cooldown_until = ?, current_neighborhood_id = ? WHERE courier_id = ?", (cooldown, neighborhood_id, courier_id))
 
 def assign_order_to_courier(order_id):
@@ -714,7 +735,7 @@ def assign_order_to_courier(order_id):
         execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
         
         ensure_courier_performance(courier_id)
-        execute_write_with_retry("UPDATE courier_performance SET daily_orders = daily_orders + 1, total_orders = total_orders + 1, last_assigned = ? WHERE courier_id = ?", (datetime.utcnow().isoformat(), courier_id))
+        execute_write_with_retry("UPDATE courier_performance SET daily_orders = daily_orders + 1, total_orders = total_orders + 1, last_assigned = ? WHERE courier_id = ?", (get_utc_time().isoformat(), courier_id))
         
         if neighborhood_id:
             set_courier_cooldown(courier_id, neighborhood_id)
@@ -846,7 +867,7 @@ def auth_register():
             name = data.get("restaurant_name") or f"Restaurant {restaurant_id}"
             execute_write_with_retry(
                 "INSERT INTO restaurants (restaurant_id, name, fee_per_package, address, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (restaurant_id, name, data.get("fee_per_package", 5.0), data.get("address", ""), phone, datetime.utcnow().isoformat())
+                (restaurant_id, name, data.get("fee_per_package", 5.0), data.get("address", ""), phone, get_utc_time().isoformat())
             )
 
     if role == "courier":
@@ -863,12 +884,12 @@ def auth_register():
         if role == "restaurant":
             execute_write_with_retry(
                 "INSERT INTO users (username, password_hash, role, created_at, restaurant_id) VALUES (?, ?, ?, ?, ?)",
-                (username, hashed, role, datetime.utcnow().isoformat(), restaurant_id)
+                (username, hashed, role, get_utc_time().isoformat(), restaurant_id)
             )
         else:
             execute_write_with_retry(
                 "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
-                (username, hashed, role, datetime.utcnow().isoformat())
+                (username, hashed, role, get_utc_time().isoformat())
             )
 
         result = execute_with_retry("SELECT id FROM users WHERE username = ?", (username,))
@@ -881,7 +902,7 @@ def auth_register():
         if role == "courier":
             execute_write_with_retry(
                 "INSERT INTO couriers (user_id, first_name, last_name, email, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, data.get("first_name", ""), data.get("last_name", ""), data.get("email"), data.get("phone"), datetime.utcnow().isoformat())
+                (user_id, data.get("first_name", ""), data.get("last_name", ""), data.get("email"), data.get("phone"), get_utc_time().isoformat())
             )
             result = execute_with_retry("SELECT * FROM couriers WHERE user_id = ?", (user_id,))
             if result and len(result) > 0:
@@ -890,7 +911,7 @@ def auth_register():
     except sqlite3.IntegrityError as e:
         return jsonify({"message": "Kullanıcı adı veya email/phone zaten var", "error": str(e)}), 400
 
-    user_resp = {"id": user_id, "username": username, "role": role, "created_at": datetime.utcnow().isoformat()}
+    user_resp = {"id": user_id, "username": username, "role": role, "created_at": get_utc_time().isoformat()}
     if role == "courier":
         user_resp["courier"] = courier_obj
     elif role == "restaurant":
@@ -976,7 +997,7 @@ def admin_create_courier():
     try:
         execute_write_with_retry(
             "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, 'courier', ?)",
-            (username, hashed, datetime.utcnow().isoformat())
+            (username, hashed, get_utc_time().isoformat())
         )
 
         result = execute_with_retry("SELECT id FROM users WHERE username = ?", (username,))
@@ -984,7 +1005,7 @@ def admin_create_courier():
 
         execute_write_with_retry(
             "INSERT INTO couriers (user_id, first_name, last_name, email, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, data.get("first_name", ""), data.get("last_name", ""), data.get("email"), phone, datetime.utcnow().isoformat())
+            (user_id, data.get("first_name", ""), data.get("last_name", ""), data.get("email"), phone, get_utc_time().isoformat())
         )
 
         result = execute_with_retry("SELECT * FROM couriers WHERE user_id = ?", (user_id,))
@@ -1027,7 +1048,8 @@ def admin_reassign_order(order_id):
     if current_courier_id == new_courier_id:
         return jsonify({"message": "Sipariş zaten bu kuryede"}), 400
 
-    now = datetime.utcnow().isoformat()
+    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
+    now = get_istanbul_time_string()
 
     try:
         if current_courier_id:
@@ -1225,7 +1247,8 @@ def courier_pickup_order(courier_id, order_id):
     if order["status"] != "yeni":
         return jsonify({"message": "Sipariş zaten alınmış"}), 400
 
-    now = datetime.utcnow().isoformat()
+    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
+    now = get_istanbul_time_string()
     execute_write_with_retry("UPDATE orders SET status = 'teslim alındı', updated_at = ? WHERE id = ?", (now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
     execute_write_with_retry("INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -1249,7 +1272,8 @@ def courier_deliver_order(courier_id, order_id):
     if order["status"] != "teslim alındı":
         return jsonify({"message": "Sipariş teslim alınmamış"}), 400
 
-    now = datetime.utcnow().isoformat()
+    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
+    now = get_istanbul_time_string()
     execute_write_with_retry("UPDATE orders SET status = 'teslim edildi', updated_at = ? WHERE id = ?", (now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
     execute_write_with_retry("UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?", (courier_id,))
@@ -1275,7 +1299,8 @@ def courier_fail_order(courier_id, order_id):
     if not result or len(result) == 0:
         return jsonify({"message": "Sipariş bulunamadı"}), 404
 
-    now = datetime.utcnow().isoformat()
+    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
+    now = get_istanbul_time_string()
     execute_write_with_retry("UPDATE orders SET status = 'teslim edilemedi', delivery_failed_reason = ?, updated_at = ? WHERE id = ?", (reason, now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
     execute_write_with_retry("UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?", (courier_id,))
@@ -1332,8 +1357,11 @@ def webhook_yemeksepeti():
     total = data.get("total") or data.get("total_amount") or 0
     address = data.get("address") or data.get("customer_address")
     payload = json.dumps(data, ensure_ascii=False)
-    created = datetime.utcnow().isoformat()
-    order_uuid = f"o-{int(datetime.utcnow().timestamp() * 1000)}"
+    
+    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
+    istanbul_time = get_istanbul_time()
+    created = istanbul_time.isoformat()
+    order_uuid = f"o-{int(istanbul_time.timestamp() * 1000)}"
 
     try:
         ok = execute_write_with_retry(
@@ -1393,8 +1421,9 @@ def admin_patch_order(order_id):
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
 
+    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
     fields.append("updated_at = ?")
-    values.append(datetime.utcnow().isoformat())
+    values.append(get_istanbul_time_string())
     values.append(order_id)
 
     execute_write_with_retry(f"UPDATE orders SET {', '.join(fields)} WHERE id = ?", values)
@@ -1440,12 +1469,12 @@ def create_restaurant():
     try:
         execute_write_with_retry(
             "INSERT INTO users (username, password_hash, role, created_at, restaurant_id) VALUES (?, ?, 'restaurant', ?, ?)",
-            (username, hashed, datetime.utcnow().isoformat(), restaurant_id)
+            (username, hashed, get_utc_time().isoformat(), restaurant_id)
         )
 
         execute_write_with_retry(
             "INSERT INTO restaurants (restaurant_id, name, fee_per_package, address, phone, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (restaurant_id, name, data.get("fee_per_package", 5.0), data.get("address", ""), phone, data.get("is_active", 1), datetime.utcnow().isoformat())
+            (restaurant_id, name, data.get("fee_per_package", 5.0), data.get("address", ""), phone, data.get("is_active", 1), get_utc_time().isoformat())
         )
 
         user_row = execute_with_retry("SELECT id, username, role, created_at, restaurant_id FROM users WHERE username = ?", (username,))
@@ -1515,7 +1544,7 @@ def create_neighborhood():
         return jsonify({"message": "Mahalle adı gerekli"}), 400
 
     try:
-        execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)", (name, datetime.utcnow().isoformat()))
+        execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)", (name, get_utc_time().isoformat()))
         result = execute_with_retry("SELECT * FROM neighborhoods WHERE name = ?", (name,))
         neighborhood = row_to_dict(result[0]) if result and len(result) > 0 else None
         return jsonify({"message": "Mahalle oluşturuldu", "neighborhood": neighborhood}), 201
@@ -1531,7 +1560,7 @@ def delete_neighborhood(neighborhood_id):
 # Health Check
 @app.route("/")
 def health():
-    return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+    return jsonify({"status": "ok", "time": get_utc_time().isoformat(), "istanbul_time": get_istanbul_time().isoformat()})
 
 if __name__ == "__main__":
     init_db()
@@ -1539,10 +1568,10 @@ if __name__ == "__main__":
     check_firebase_setup()
     
     # SUNUCU SAATİ KONTROLÜ
-    now_utc = datetime.utcnow()
-    now_local = datetime.now()
+    now_utc = get_utc_time()
+    now_ist = get_istanbul_time()
     app.logger.info(f"⏰ UTC zamanı: {now_utc.isoformat()}")
-    app.logger.info(f"⏰ Local zamanı: {now_local.isoformat()}")
+    app.logger.info(f"⏰ İstanbul zamanı: {now_ist.isoformat()}")
     
     import time
     offset = time.timezone if not time.daylight else time.altzone
