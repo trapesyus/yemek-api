@@ -61,98 +61,64 @@ def setup_logging():
 setup_logging()
 
 # Firebase Admin SDK initialization - TAMAMEN YENİ
-# --- Güçlendirilmiş Firebase init (kopyala / mevcut bloğun yerine koy) ---
+# Güçlendirilmiş tek-service-account dosyası ile init
 firebase_app = None
 if FIREBASE_AVAILABLE:
     try:
-        # Öncelikle doğrudan dosyadan aranan isimler
-        service_account_files = [
-            "service-account.json",
-            "service-account-key.json",
-            "firebase-service-account.json"
-        ]
+        # Tek dosya yolu: burayı gerçek yol ile değiştir
+        sa_path = "/root/perem-sa-new.json"
 
-        cred = None
-        used_file = None
-
-        for service_file in service_account_files:
-            if not os.path.exists(service_file):
-                continue
-
+        if not os.path.exists(sa_path):
+            app.logger.error(f"❌ Service account dosyası bulunamadı: {sa_path}")
+        else:
             try:
-                # JSON'ı dict olarak oku (bu, private_key kaçışlarını düzeltme imkanı verir)
-                with open(service_file, 'r', encoding='utf-8') as f:
+                with open(sa_path, 'r', encoding='utf-8') as f:
                     key_data = json.load(f)
 
-                # Temel doğrulamalar
+                # Zorunlu alan kontrolü
                 required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
                 missing = [f for f in required_fields if f not in key_data]
                 if missing:
-                    app.logger.error(f"❌ {service_file} eksik alanlar: {missing}")
-                    continue
+                    app.logger.error(f"❌ Service account dosyası eksik alanlar: {missing}")
+                elif key_data.get('type') != 'service_account':
+                    app.logger.error(f"❌ service account tipi beklenmiyor: {key_data.get('type')}")
+                else:
+                    # Escape edilmiş '\n'leri düzelt (ENV ile gelse bile güvenli)
+                    pk = key_data.get('private_key','')
+                    if '\\n' in pk:
+                        app.logger.warning("⚠️ private_key içinde kaçışlı '\\n' bulundu; düzeltiliyor.")
+                        key_data['private_key'] = pk.replace('\\n', '\n')
 
-                if key_data.get('type') != 'service_account':
-                    app.logger.error(f"❌ {service_file} service account değil (type: {key_data.get('type')})")
-                    continue
+                    if not key_data['private_key'].strip().startswith('-----BEGIN PRIVATE KEY-----'):
+                        app.logger.error("❌ private_key PEM formatı beklenmiyor.")
+                    else:
+                        # credentials oluştur ve initialize et
+                        try:
+                            cred = credentials.Certificate(key_data)
+                            firebase_app = firebase_admin.initialize_app(cred)
+                            app.logger.info(f"✅ Firebase başlatıldı: {sa_path}")
 
-                # PRIVATE KEY içindeki '\\n' kaçışlarını gerçek new-line'a çevir (env'den gelen stringler için de güvenli)
-                pk = key_data.get('private_key') or ''
-                if '\\n' in pk:
-                    app.logger.warning(f"⚠️ {service_file} private_key içinde kaçışlı \\n karakterleri bulundu; düzeltiliyor.")
-                    key_data['private_key'] = pk.replace('\\n', '\n')
-
-                # Basit bir format kontrolü
-                if not key_data['private_key'].strip().startswith('-----BEGIN PRIVATE KEY-----'):
-                    app.logger.error(f"❌ {service_file} private_key formatı beklenen gibi değil.")
-                    continue
-
-                # credentials.Certificate dict'i kabul eder (kütüphane sürümüne bağlı olarak)
-                try:
-                    cred = credentials.Certificate(key_data)
-                except Exception as e:
-                    # Eğer dict ile hata verirse, geçici olarak dosyaya yazıp kullan
-                    tmp_path = f"/tmp/firebase_sa_{int(time.time())}.json"
-                    with open(tmp_path, 'w', encoding='utf-8') as tmpf:
-                        json.dump(key_data, tmpf)
-                    cred = credentials.Certificate(tmp_path)
-                    # tmp dosyayı kalıcı saklama, temizlemek istersen ekle
-                used_file = service_file
-                break
+                            # Kısa dry_run testi
+                            try:
+                                test_msg = messaging.Message(token="test-token-for-dry-run", data={'test': 'connection'})
+                                messaging.send(test_msg, dry_run=True)
+                                app.logger.info("✅ Firebase dry_run testi başarılı veya uygun yanıt alındı.")
+                            except Exception as e:
+                                app.logger.warning(f"⚠️ Firebase dry_run exception: {e}")
+                                if 'invalid_grant' in str(e).lower():
+                                    app.logger.error("🚨 invalid_grant tespit edildi — genelde key iptal edilmiş veya saat uyumsuzluğu.")
+                        except Exception as e:
+                            app.logger.exception(f"❌ Firebase initialize hatası: {e}")
+                            firebase_app = None
 
             except json.JSONDecodeError as e:
-                app.logger.error(f"❌ {service_file} JSON decode hatası: {e}")
-                continue
+                app.logger.error(f"❌ JSON decode hatası: {e}")
             except Exception as e:
-                app.logger.error(f"❌ {service_file} okunurken hata: {e}")
-                continue
-
-        if cred:
-            try:
-                firebase_app = firebase_admin.initialize_app(cred)
-                app.logger.info(f"✅ Firebase başlatıldı: {used_file}")
-
-                # Bağlantı testi: dry_run ile token test et (geçersiz token hata verebilir ama invalid_grant farklı)
-                try:
-                    test_msg = messaging.Message(token="test-token-for-dry-run", data={'test': 'connection'})
-                    messaging.send(test_msg, dry_run=True)
-                    app.logger.info("✅ Firebase API dry_run başarılı veya uygun yanıt alındı.")
-                except Exception as e:
-                    es = str(e).lower()
-                    app.logger.warning(f"⚠️ Firebase test exception: {e}")
-                    if 'invalid_grant' in es:
-                        app.logger.error("🚨 Firebase hata: invalid_grant. Muhtemel nedenler: yanlış service account, private_key formatı veya sunucu saati.")
-                    # Diğer hata mesajlarını da logla — production için daha detaylı kontrol koy
-            except Exception as e:
-                app.logger.error(f"❌ Firebase initialize hatası: {e}")
-                if 'invalid_grant' in str(e).lower():
-                    app.logger.error("🚨 invalid_grant tespit edildi — key'i yeniden oluştur ve sunucu saatini kontrol et.")
-                firebase_app = None
-        else:
-            app.logger.warning("❌ Geçerli service account dosyası bulunamadı veya doğrulanamadı.")
+                app.logger.exception(f"❌ Service account okunurken hata: {e}")
     except Exception as e:
-        app.logger.error(f"❌ Firebase başlatma genel hata: {e}")
+        app.logger.exception(f"❌ Genel firebase init hatası: {e}")
         firebase_app = None
-# --- end firebase init ---
+
 
 
 
