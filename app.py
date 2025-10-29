@@ -1,4 +1,4 @@
-# app.py - İSTANBUL SAATİ DÜZENLENMİŞ VERSİYON
+# app.py - GÜNCELLEME (Process TZ -> UTC, JWT timestamp, debug loglar)
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit, join_room
 from datetime import datetime, timedelta
@@ -29,6 +29,20 @@ except ImportError:
     FIREBASE_AVAILABLE = False
     print("⚠️ Firebase Admin SDK kurulu değil. FCM özellikleri devre dışı.")
 
+# ---------------------------
+# Process-level SAFE TZ forcing
+# ---------------------------
+# Sunucu saatini bozmadan, Python process'inin timezone davranışını UTC'ye zorluyoruz.
+# Bu, firebase/google kütüphanelerinin time-based doğrulamalarında tutarsızlıkları önlemeye yardımcı olur.
+os.environ['TZ'] = 'UTC'
+try:
+    time.tzset()  # Unix-only; Windows'ta sessizce atlar
+except Exception:
+    pass
+
+# ---------------------------
+# Flask app & config
+# ---------------------------
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'çok_gizli_bir_anahtar_socket_io_icin'
 DB_NAME = "orders.db"
@@ -36,23 +50,22 @@ SECRET_KEY = "çok_gizli_bir_anahtar"
 JWT_ALGORITHM = "HS256"
 TOKEN_EXP_HOURS = 8
 
-# Zaman dilimleri - EKLENDİ
+# Zaman dilimleri
 UTC_TIMEZONE = pytz.UTC
 IST_TIMEZONE = pytz.timezone('Europe/Istanbul')
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
-# Zaman fonksiyonları - EKLENDİ
+# Zaman fonksiyonları
 def get_utc_time():
-    """UTC zamanını döndürür"""
+    """Aware UTC datetime"""
     return datetime.now(UTC_TIMEZONE)
 
 def get_istanbul_time():
-    """İstanbul zamanını döndürür"""
+    """Aware Istanbul (Europe/Istanbul) datetime"""
     return datetime.now(IST_TIMEZONE)
 
 def get_istanbul_time_string():
-    """İstanbul zamanını string olarak döndürür"""
     return get_istanbul_time().isoformat()
 
 # Loglama sistemini kur
@@ -75,10 +88,20 @@ def setup_logging():
 
 setup_logging()
 
-# Firebase Admin SDK initialization - TAMAMEN YENİ
+# ---------------------------
+# Firebase Admin SDK initialization
+# ---------------------------
 firebase_app = None
 if FIREBASE_AVAILABLE:
     try:
+        # DEBUG TIME BEFORE FIREBASE INIT
+        app.logger.info("TIME-DEBUG BEFORE FIREBASE INIT")
+        app.logger.info(f" time.time(): {time.time()}")
+        app.logger.info(f" datetime.utcnow(): {datetime.utcnow().isoformat()}")
+        app.logger.info(f" get_utc_time(): {get_utc_time().isoformat()}")
+        app.logger.info(f" get_istanbul_time(): {get_istanbul_time().isoformat()}")
+        app.logger.info(f" TZ env: {os.environ.get('TZ')}, tzname: {time.tzname}, timezone: {time.timezone}, altzone: {getattr(time, 'altzone', 'NA')}")
+
         service_account_files = [
             "service-account.json",
             "service-account-key.json", 
@@ -127,25 +150,32 @@ if FIREBASE_AVAILABLE:
                 firebase_app = firebase_admin.initialize_app(cred)
                 app.logger.info(f"✅ Firebase başlatıldı: {used_file}")
                 
-                # Bağlantı testi
-                test_msg = messaging.Message(token="test:token", data={'test': 'connection'})
+                # Bağlantı testi (dry_run ile)
                 try:
+                    test_msg = messaging.Message(token="test:token", data={'test': 'connection'})
                     messaging.send(test_msg, dry_run=True)
-                    app.logger.info("✅ Firebase API bağlantısı başarılı")
+                    app.logger.info("✅ Firebase API bağlantısı başarılı (dry_run)")
                 except Exception as e:
-                    if 'invalid-argument' in str(e).lower():
-                        app.logger.info("✅ Firebase API çalışıyor")
-                    elif 'invalid_grant' in str(e).lower():
-                        app.logger.error("❌ SUNUCU SAATİ HATALI! UTC'ye çevirin:")
-                        app.logger.error("   sudo timedatectl set-timezone UTC")
+                    # Hata alınırsa, zaman bilgilerini de logla
+                    errstr = str(e).lower()
+                    if 'invalid-argument' in errstr:
+                        app.logger.info("✅ Firebase API çalışıyor (invalid-argument returned during dry_run)")
+                    elif 'invalid_grant' in errstr:
+                        app.logger.error("❌ SUNUCU SAATİ HATALI veya SERVICE ACCOUNT KEY SORUNU! (invalid_grant)")
+                        app.logger.error("   time debug at error:")
+                        app.logger.error(f"    time.time(): {time.time()}")
+                        app.logger.error(f"    datetime.utcnow(): {datetime.utcnow().isoformat()}")
+                        app.logger.error(f"    get_utc_time(): {get_utc_time().isoformat()}")
+                        app.logger.error(f"    get_istanbul_time(): {get_istanbul_time().isoformat()}")
+                        app.logger.error("   Eğer process TZ UTC değilse: os.environ['TZ']='UTC' + time.tzset() uygulayın veya host timezone'u UTC yapın.")
                     else:
                         app.logger.warning(f"⚠️ Firebase test: {e}")
                         
             except Exception as e:
                 app.logger.error(f"❌ Firebase init: {e}")
                 if 'invalid_grant' in str(e).lower():
-                    app.logger.error("🚨 SUNUCU SAATİ YANLIŞ veya KEY ESKİ!")
-                    app.logger.error("   1. sudo timedatectl set-timezone UTC")
+                    app.logger.error("🚨 SUNUCU SAATİ YANLIŞ veya SERVICE ACCOUNT KEY ESKİ!")
+                    app.logger.error("   1. sudo timedatectl set-timezone UTC (host tercih edilirse)")
                     app.logger.error("   2. Service account key'i YENİLEYİN")
                 firebase_app = None
         else:
@@ -162,7 +192,7 @@ def check_firebase_setup():
         app.logger.warning("="*60)
         app.logger.warning("1. Firebase Console → Service Accounts → YENİ KEY İNDİR")
         app.logger.warning("2. 'service-account.json' olarak kaydet")
-        app.logger.warning("3. Sunucu saati UTC olmalı: date (UTC göstermeli)")
+        app.logger.warning("3. Process-level timezone UTC: os.environ['TZ']='UTC' ve time.tzset() kullanın")
         app.logger.warning("="*60 + "\n")
 
 courier_connections = {}
@@ -174,14 +204,14 @@ EMAIL_USERNAME = "hediyecennetti@gmail.com"
 EMAIL_PASSWORD = "brvl ucry jgml qnsn"
 REPORT_RECIPIENTS = {"email": ["emrulllahtoprak009@gmail.com"]}
 
-# FCM Fonksiyonları - TAMAMEN YENİ
+# FCM Fonksiyonları
 def validate_fcm_token(fcm_token):
     if not fcm_token:
         return False
     
     if not firebase_app:
-        return True  # Firebase yoksa kabul et
-
+        return True  # Firebase yoksa kabul et (geçici)
+    
     try:
         if len(fcm_token) < 20:
             return False
@@ -206,7 +236,8 @@ def validate_fcm_token(fcm_token):
         
         # Sunucu saati hatası
         if 'invalid_grant' in error_str:
-            app.logger.error("❌ SUNUCU SAATİ YANLIŞ!")
+            app.logger.error("❌ SUNUCU SAATİ YANLIŞ! (validate_fcm_token caught invalid_grant)")
+            app.logger.error(f" TIME DEBUG: time.time()={time.time()}, datetime.utcnow()={datetime.utcnow().isoformat()}, get_utc_time()={get_utc_time().isoformat()}")
         
         app.logger.error(f"❌ Firebase error: {e}")
         return False
@@ -251,7 +282,8 @@ def send_fcm_notification(fcm_token, title, body, data=None):
         
         # Sunucu saati hatası
         if 'invalid_grant' in error_str:
-            app.logger.error("❌ SUNUCU SAATİ HATASI!")
+            app.logger.error("❌ SUNUCU SAATİ HATASI! (send_fcm_notification)")
+            app.logger.error(f" TIME DEBUG: time.time()={time.time()}, datetime.utcnow()={datetime.utcnow().isoformat()}, get_utc_time()={get_utc_time().isoformat()}")
         
         app.logger.error(f"❌ FCM error: {e}")
         return False
@@ -614,8 +646,10 @@ def check_password(password, hashed):
         return False
 
 def generate_token(user_id, role):
-    # Token için UTC kullanmaya devam ediyoruz
-    payload = {"user_id": user_id, "role": role, "exp": get_utc_time() + timedelta(hours=TOKEN_EXP_HOURS)}
+    # Güvenli: iat/exp olarak integer unix timestamp kullan
+    iat = int(time.time())
+    exp = iat + TOKEN_EXP_HOURS * 3600
+    payload = {"user_id": user_id, "role": role, "iat": iat, "exp": exp}
     token = jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
     return token.decode("utf-8") if isinstance(token, bytes) else token
 
@@ -756,7 +790,7 @@ def assign_order_to_courier(order_id):
     
     return False
 
-# FCM Token Endpoint - DÜZELTİLMİŞ
+# FCM Token Endpoint
 @app.route("/couriers/<int:courier_id>/fcm-token", methods=["POST"])
 @token_required
 def update_fcm_token(courier_id):
@@ -773,14 +807,13 @@ def update_fcm_token(courier_id):
 
     try:
         # GEÇİCİ FIX: Validation'ı atla, sadece kaydet
-        # TODO: Firebase key sorununu çözdükten sonra validation'ı geri ekle
+        # TODO: Firebase key sorununu düzelttikten sonra validation'ı geri ekle
         if firebase_app:
             app.logger.warning(f"⚠️ Token kaydediliyor (validation atlandı): {fcm_token[:15]}...")
             # is_valid = validate_fcm_token(fcm_token)
             # if not is_valid:
             #     return jsonify({"message": "Geçersiz FCM token"}), 400
         
-        # Token'ı kaydet
         success = execute_write_with_retry("UPDATE couriers SET fcm_token = ? WHERE id = ?", (fcm_token, courier_id))
 
         if success:
@@ -1048,7 +1081,7 @@ def admin_reassign_order(order_id):
     if current_courier_id == new_courier_id:
         return jsonify({"message": "Sipariş zaten bu kuryede"}), 400
 
-    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
+    # İstanbul zamanını DB kaydı için kullanıyoruz (isteğiniz üzerine)
     now = get_istanbul_time_string()
 
     try:
@@ -1247,7 +1280,7 @@ def courier_pickup_order(courier_id, order_id):
     if order["status"] != "yeni":
         return jsonify({"message": "Sipariş zaten alınmış"}), 400
 
-    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
+    # İstanbul zamanını kullanıyoruz (DB kaydı)
     now = get_istanbul_time_string()
     execute_write_with_retry("UPDATE orders SET status = 'teslim alındı', updated_at = ? WHERE id = ?", (now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
@@ -1272,7 +1305,7 @@ def courier_deliver_order(courier_id, order_id):
     if order["status"] != "teslim alındı":
         return jsonify({"message": "Sipariş teslim alınmamış"}), 400
 
-    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
+    # İstanbul zamanını kullanıyoruz (DB kaydı)
     now = get_istanbul_time_string()
     execute_write_with_retry("UPDATE orders SET status = 'teslim edildi', updated_at = ? WHERE id = ?", (now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
@@ -1299,7 +1332,7 @@ def courier_fail_order(courier_id, order_id):
     if not result or len(result) == 0:
         return jsonify({"message": "Sipariş bulunamadı"}), 404
 
-    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
+    # İstanbul zamanını kullanıyoruz (DB kaydı)
     now = get_istanbul_time_string()
     execute_write_with_retry("UPDATE orders SET status = 'teslim edilemedi', delivery_failed_reason = ?, updated_at = ? WHERE id = ?", (reason, now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
@@ -1358,7 +1391,7 @@ def webhook_yemeksepeti():
     address = data.get("address") or data.get("customer_address")
     payload = json.dumps(data, ensure_ascii=False)
     
-    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
+    # İstanbul zamanını kullanarak DB'ye kaydet (isteğiniz üzerine)
     istanbul_time = get_istanbul_time()
     created = istanbul_time.isoformat()
     order_uuid = f"o-{int(istanbul_time.timestamp() * 1000)}"
@@ -1421,7 +1454,7 @@ def admin_patch_order(order_id):
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
 
-    # İSTANBUL SAATİNİ KULLAN - DEĞİŞTİRİLDİ
+    # İstanbul zamanını DB güncelleme için kullan
     fields.append("updated_at = ?")
     values.append(get_istanbul_time_string())
     values.append(order_id)
@@ -1567,20 +1600,20 @@ if __name__ == "__main__":
     app.logger.info("🚀 Flask başlatılıyor...")
     check_firebase_setup()
     
-    # SUNUCU SAATİ KONTROLÜ
+    # SUNUCU / PROCESS SAATİ KONTROLÜ - LOG
     now_utc = get_utc_time()
     now_ist = get_istanbul_time()
     app.logger.info(f"⏰ UTC zamanı: {now_utc.isoformat()}")
     app.logger.info(f"⏰ İstanbul zamanı: {now_ist.isoformat()}")
     
-    import time
     offset = time.timezone if not time.daylight else time.altzone
     offset_hours = -offset / 3600
-    app.logger.info(f"⏰ UTC offset: {offset_hours:+.1f} saat")
+    app.logger.info(f"⏰ UTC offset (process): {offset_hours:+.1f} saat")
+    app.logger.info(f"TIME-DEBUG final: TZ env={os.environ.get('TZ')}, tzname={time.tzname}, timezone={time.timezone}, altzone={getattr(time, 'altzone', 'NA')}")
     
     if abs(offset_hours) > 0.5:
-        app.logger.warning("⚠️ UYARI: Sunucu UTC değil! Firebase için sorun olabilir.")
-        app.logger.warning("   Çözüm: sudo timedatectl set-timezone UTC")
+        app.logger.warning("⚠️ UYARI: Process UTC değil! Firebase için sorun olabilir.")
+        app.logger.warning("   Çözüm: sudo timedatectl set-timezone UTC veya process-level os.environ['TZ']='UTC' + time.tzset()")
     
     app.logger.info("✅ Veritabanı hazır")
     app.logger.info("✅ WebSocket aktif")
