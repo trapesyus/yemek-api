@@ -1,4 +1,4 @@
-# app.py - GÜNCELLEME (Process TZ -> UTC, JWT timestamp, debug loglar)
+# app.py - İSTANBUL SAATİ DESTEKLİ TAM VERSİYON
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit, join_room
 from datetime import datetime, timedelta
@@ -17,7 +17,6 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from functools import wraps
 from apscheduler.schedulers.background import BackgroundScheduler
-import pytz  # Zaman dilimleri için eklendi
 
 # Firebase Admin SDK imports
 try:
@@ -29,20 +28,6 @@ except ImportError:
     FIREBASE_AVAILABLE = False
     print("⚠️ Firebase Admin SDK kurulu değil. FCM özellikleri devre dışı.")
 
-# ---------------------------
-# Process-level SAFE TZ forcing
-# ---------------------------
-# Sunucu saatini bozmadan, Python process'inin timezone davranışını UTC'ye zorluyoruz.
-# Bu, firebase/google kütüphanelerinin time-based doğrulamalarında tutarsızlıkları önlemeye yardımcı olur.
-os.environ['TZ'] = 'UTC'
-try:
-    time.tzset()  # Unix-only; Windows'ta sessizce atlar
-except Exception:
-    pass
-
-# ---------------------------
-# Flask app & config
-# ---------------------------
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'çok_gizli_bir_anahtar_socket_io_icin'
 DB_NAME = "orders.db"
@@ -50,198 +35,166 @@ SECRET_KEY = "çok_gizli_bir_anahtar"
 JWT_ALGORITHM = "HS256"
 TOKEN_EXP_HOURS = 8
 
-# Zaman dilimleri
-UTC_TIMEZONE = pytz.UTC
-IST_TIMEZONE = pytz.timezone('Europe/Istanbul')
-
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
-# Zaman fonksiyonları
-def get_utc_time():
-    """Aware UTC datetime"""
-    return datetime.now(UTC_TIMEZONE)
-
+# İstanbul saat dilimi için fonksiyon
 def get_istanbul_time():
-    """Aware Istanbul (Europe/Istanbul) datetime"""
-    return datetime.now(IST_TIMEZONE)
+    """UTC'yi İstanbul saatine çevir (+3 saat)"""
+    utc_now = datetime.utcnow()
+    istanbul_offset = timedelta(hours=3)
+    return utc_now + istanbul_offset
 
-def get_istanbul_time_string():
-    return get_istanbul_time().isoformat()
+def format_datetime_for_display(dt_string):
+    """UTC datetime string'ini İstanbul zamanına çevir ve formatla"""
+    if not dt_string:
+        return None
+    try:
+        # UTC datetime'ını parse et
+        if 'Z' in dt_string:
+            dt_string = dt_string.replace('Z', '+00:00')
+        utc_dt = datetime.fromisoformat(dt_string.replace('Z', '+00:00'))
+        
+        # UTC'den İstanbul'a çevir (+3 saat)
+        istanbul_dt = utc_dt + timedelta(hours=3)
+        
+        # Okunabilir formata çevir
+        return istanbul_dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, AttributeError) as e:
+        app.logger.error(f"❌ Tarih dönüşüm hatası: {e}, orijinal: {dt_string}")
+        return dt_string
+
+def format_datetime_for_storage():
+    """Veritabanına kaydetmek için UTC zamanı döndür"""
+    return datetime.utcnow().isoformat()
 
 # Loglama sistemini kur
 def setup_logging():
     if not os.path.exists('logs'):
         os.makedirs('logs')
-    
+
     file_handler = RotatingFileHandler('logs/app.log', maxBytes=10240, backupCount=10)
     file_handler.setFormatter(logging.Formatter(
         '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
     ))
     file_handler.setLevel(logging.INFO)
-    
+
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.DEBUG)
-    
+
     app.logger.setLevel(logging.INFO)
     app.logger.addHandler(file_handler)
     app.logger.addHandler(console_handler)
 
 setup_logging()
 
-# ---------------------------
 # Firebase Admin SDK initialization
-# ---------------------------
 firebase_app = None
 if FIREBASE_AVAILABLE:
     try:
-        # DEBUG TIME BEFORE FIREBASE INIT
-        app.logger.info("TIME-DEBUG BEFORE FIREBASE INIT")
-        app.logger.info(f" time.time(): {time.time()}")
-        app.logger.info(f" datetime.utcnow(): {datetime.utcnow().isoformat()}")
-        app.logger.info(f" get_utc_time(): {get_utc_time().isoformat()}")
-        app.logger.info(f" get_istanbul_time(): {get_istanbul_time().isoformat()}")
-        app.logger.info(f" TZ env: {os.environ.get('TZ')}, tzname: {time.tzname}, timezone: {time.timezone}, altzone: {getattr(time, 'altzone', 'NA')}")
-
         service_account_files = [
             "service-account.json",
-            "service-account-key.json", 
+            "service-account-key.json",
             "firebase-service-account.json"
         ]
-        
+
         cred = None
         used_file = None
-        
+
         for service_file in service_account_files:
             if not os.path.exists(service_file):
                 continue
-                
+
             try:
                 with open(service_file, 'r') as f:
                     key_data = json.load(f)
-                    
+
                 required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
                 missing = [f for f in required_fields if f not in key_data]
-                
+
                 if missing:
                     app.logger.error(f"❌ {service_file} eksik alanlar: {missing}")
                     continue
-                
+
                 if key_data.get('type') != 'service_account':
                     app.logger.error(f"❌ {service_file} service account değil")
                     continue
-                
+
                 if not key_data.get('private_key', '').startswith('-----BEGIN PRIVATE KEY-----'):
                     app.logger.error(f"❌ {service_file} private key formatı geçersiz")
                     continue
-                
+
                 cred = credentials.Certificate(service_file)
                 used_file = service_file
                 break
-                
+
             except json.JSONDecodeError as e:
                 app.logger.error(f"❌ {service_file} JSON hatası: {e}")
                 continue
             except Exception as e:
                 app.logger.error(f"❌ {service_file} okuma hatası: {e}")
                 continue
-        
+
         if cred:
             try:
                 firebase_app = firebase_admin.initialize_app(cred)
                 app.logger.info(f"✅ Firebase başlatıldı: {used_file}")
-                
-                # Bağlantı testi (dry_run ile)
-                try:
-                    test_msg = messaging.Message(token="test:token", data={'test': 'connection'})
-                    messaging.send(test_msg, dry_run=True)
-                    app.logger.info("✅ Firebase API bağlantısı başarılı (dry_run)")
-                except Exception as e:
-                    # Hata alınırsa, zaman bilgilerini de logla
-                    errstr = str(e).lower()
-                    if 'invalid-argument' in errstr:
-                        app.logger.info("✅ Firebase API çalışıyor (invalid-argument returned during dry_run)")
-                    elif 'invalid_grant' in errstr:
-                        app.logger.error("❌ SUNUCU SAATİ HATALI veya SERVICE ACCOUNT KEY SORUNU! (invalid_grant)")
-                        app.logger.error("   time debug at error:")
-                        app.logger.error(f"    time.time(): {time.time()}")
-                        app.logger.error(f"    datetime.utcnow(): {datetime.utcnow().isoformat()}")
-                        app.logger.error(f"    get_utc_time(): {get_utc_time().isoformat()}")
-                        app.logger.error(f"    get_istanbul_time(): {get_istanbul_time().isoformat()}")
-                        app.logger.error("   Eğer process TZ UTC değilse: os.environ['TZ']='UTC' + time.tzset() uygulayın veya host timezone'u UTC yapın.")
-                    else:
-                        app.logger.warning(f"⚠️ Firebase test: {e}")
-                        
             except Exception as e:
                 app.logger.error(f"❌ Firebase init: {e}")
-                if 'invalid_grant' in str(e).lower():
-                    app.logger.error("🚨 SUNUCU SAATİ YANLIŞ veya SERVICE ACCOUNT KEY ESKİ!")
-                    app.logger.error("   1. sudo timedatectl set-timezone UTC (host tercih edilirse)")
-                    app.logger.error("   2. Service account key'i YENİLEYİN")
                 firebase_app = None
         else:
             app.logger.warning("❌ Geçerli service account dosyası yok")
-            
+
     except Exception as e:
         app.logger.error(f"❌ Firebase başlatma: {e}")
         firebase_app = None
 
 def check_firebase_setup():
     if not firebase_app:
-        app.logger.warning("\n" + "="*60)
+        app.logger.warning("\n" + "=" * 60)
         app.logger.warning("🚨 FIREBASE KURULUMU GEREKLİ")
-        app.logger.warning("="*60)
+        app.logger.warning("=" * 60)
         app.logger.warning("1. Firebase Console → Service Accounts → YENİ KEY İNDİR")
         app.logger.warning("2. 'service-account.json' olarak kaydet")
-        app.logger.warning("3. Process-level timezone UTC: os.environ['TZ']='UTC' ve time.tzset() kullanın")
-        app.logger.warning("="*60 + "\n")
+        app.logger.warning("3. Sunucu saati UTC olmalı: date (UTC göstermeli)")
+        app.logger.warning("=" * 60 + "\n")
 
 courier_connections = {}
 scheduler = BackgroundScheduler()
 
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-EMAIL_USERNAME = "hediyecennetti@gmail.com"
-EMAIL_PASSWORD = "brvl ucry jgml qnsn"
-REPORT_RECIPIENTS = {"email": ["emrulllahtoprak009@gmail.com"]}
+EMAIL_USERNAME = "your_email@gmail.com"
+EMAIL_PASSWORD = "your_app_password"
+REPORT_RECIPIENTS = {"email": ["admin@firma.com"]}
 
 # FCM Fonksiyonları
 def validate_fcm_token(fcm_token):
     if not fcm_token:
         return False
-    
+
     if not firebase_app:
-        return True  # Firebase yoksa kabul et (geçici)
-    
+        return True  # Firebase yoksa kabul et
+
     try:
         if len(fcm_token) < 20:
             return False
-        
+
         message = messaging.Message(token=fcm_token, data={'validation': 'test'})
         messaging.send(message, dry_run=True)
         app.logger.info(f"✅ Token geçerli: {fcm_token[:15]}...")
         return True
-        
+
     except FirebaseError as e:
         error_str = str(e).lower()
-        
-        # Token kayıtsız
         if 'unregistered' in error_str or 'not-found' in error_str:
             app.logger.warning(f"⚠️ Token kayıtsız: {fcm_token[:15]}...")
             return False
-        
-        # Token geçersiz
         if 'invalid-argument' in error_str or 'invalid' in error_str:
             app.logger.error(f"❌ Token geçersiz: {fcm_token[:15]}...")
             return False
-        
-        # Sunucu saati hatası
-        if 'invalid_grant' in error_str:
-            app.logger.error("❌ SUNUCU SAATİ YANLIŞ! (validate_fcm_token caught invalid_grant)")
-            app.logger.error(f" TIME DEBUG: time.time()={time.time()}, datetime.utcnow()={datetime.utcnow().isoformat()}, get_utc_time()={get_utc_time().isoformat()}")
-        
         app.logger.error(f"❌ Firebase error: {e}")
         return False
-        
+
     except Exception as e:
         app.logger.error(f"❌ Validation error: {e}")
         return False
@@ -275,19 +228,11 @@ def send_fcm_notification(fcm_token, title, body, data=None):
 
     except FirebaseError as e:
         error_str = str(e).lower()
-        
-        # Token geçersiz veya kayıtsız - temizle
         if any(x in error_str for x in ['unregistered', 'not-found', 'invalid-argument']):
             cleanup_invalid_fcm_token(fcm_token)
-        
-        # Sunucu saati hatası
-        if 'invalid_grant' in error_str:
-            app.logger.error("❌ SUNUCU SAATİ HATASI! (send_fcm_notification)")
-            app.logger.error(f" TIME DEBUG: time.time()={time.time()}, datetime.utcnow()={datetime.utcnow().isoformat()}, get_utc_time()={get_utc_time().isoformat()}")
-        
         app.logger.error(f"❌ FCM error: {e}")
         return False
-        
+
     except Exception as e:
         app.logger.error(f"❌ Send error: {e}")
         return False
@@ -307,7 +252,18 @@ def get_conn():
     return conn
 
 def row_to_dict(row):
-    return {k: row[k] for k in row.keys()} if row else None
+    if not row:
+        return None
+    
+    result = {k: row[k] for k in row.keys()}
+    
+    # Tarih alanlarını İstanbul saatine çevir
+    datetime_fields = ['created_at', 'updated_at', 'last_assigned', 'cooldown_until']
+    for field in datetime_fields:
+        if field in result and result[field]:
+            result[field] = format_datetime_for_display(result[field])
+    
+    return result
 
 def column_exists(conn, table, column):
     cur = conn.cursor()
@@ -437,7 +393,7 @@ def init_db():
         ('courier_performance', 'cooldown_until', 'TEXT'),
         ('courier_performance', 'current_neighborhood_id', 'INTEGER')
     ]
-    
+
     for table, column, col_type in migrations:
         try:
             if not column_exists(conn, table, column):
@@ -478,13 +434,13 @@ def send_email(to_email, subject, html_content):
         msg['From'] = EMAIL_USERNAME
         msg['To'] = to_email
         msg.attach(MIMEText(html_content, 'html'))
-        
+
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
         server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
         server.send_message(msg)
         server.quit()
-        
+
         app.logger.info(f"✅ Email gönderildi: {to_email}")
         return True
     except Exception as e:
@@ -493,22 +449,21 @@ def send_email(to_email, subject, html_content):
 
 def generate_monthly_report():
     try:
-        # Raporlar için UTC kullanmaya devam ediyoruz
-        today = get_utc_time()
+        today = datetime.utcnow()
         first_day = today.replace(day=1)
         last_day = first_day - timedelta(days=1)
         first_prev = last_day.replace(day=1)
-        
+
         start = first_prev.strftime("%Y-%m-%d")
         end = last_day.strftime("%Y-%m-%d")
-        
+
         result = execute_with_retry(
             "SELECT status, COUNT(*) as cnt FROM orders WHERE created_at >= ? AND created_at < ? GROUP BY status",
             (start, f"{end} 23:59:59")
         )
-        
+
         status_counts = {row["status"]: row["cnt"] for row in result} if result else {}
-        
+
         return {
             'success': True,
             'period': {'start': start, 'end': end},
@@ -521,38 +476,40 @@ def generate_monthly_report():
 def format_report_for_email(report_data):
     if not report_data.get('success'):
         return f"Rapor hatası: {report_data.get('error')}", "Hata"
-    
+
     period = report_data['period']
+    istanbul_time = get_istanbul_time().strftime("%Y-%m-%d %H:%M:%S")
     subject = f"Aylık Rapor - {period['start']} - {period['end']}"
-    
+
     html = f"""<html><body>
     <h1>Aylık Rapor</h1>
     <p>Dönem: {period['start']} - {period['end']}</p>
-    <p>Oluşturulma: {get_utc_time().isoformat()} UTC</p>
+    <p>Oluşturulma: {istanbul_time} (İstanbul)</p>
     </body></html>"""
-    
+
     return html, subject
 
 def distribute_monthly_report():
     try:
         report_data = generate_monthly_report()
         html, subject = format_report_for_email(report_data)
-        
+
         count = 0
         for email in REPORT_RECIPIENTS.get('email', []):
             if send_email(email, subject, html):
                 count += 1
-        
+
         if count > 0:
             reset_monthly_orders()
-        
+
         return {'success': True, 'email_sent': count}
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
 def schedule_monthly_report():
     try:
-        scheduler.add_job(distribute_monthly_report, 'cron', day='last', hour=23, minute=0, id='monthly_report', replace_existing=True)
+        scheduler.add_job(distribute_monthly_report, 'cron', day='last', hour=23, minute=0, id='monthly_report',
+                          replace_existing=True)
         app.logger.info("✅ Aylık rapor zamanlayıcısı eklendi")
     except Exception as e:
         app.logger.error(f"❌ Zamanlayıcı hatası: {e}")
@@ -589,10 +546,10 @@ def handle_courier_register(data):
 def notify_courier_new_order(courier_id, order_data):
     try:
         cid = str(courier_id)
-        
+
         if cid in courier_connections:
             socketio.emit('new_order', order_data, room=f'courier_{cid}')
-        
+
         result = execute_with_retry("SELECT fcm_token FROM couriers WHERE id = ?", (courier_id,))
         if result and len(result) > 0:
             token = row_to_dict(result[0]).get('fcm_token')
@@ -605,7 +562,7 @@ def notify_courier_new_order(courier_id, order_data):
                     'click_action': 'FLUTTER_NOTIFICATION_CLICK'
                 }
                 send_fcm_notification(token, title, body, fcm_data)
-        
+
         return True
     except Exception as e:
         app.logger.error(f"❌ Notify error: {e}")
@@ -614,13 +571,13 @@ def notify_courier_new_order(courier_id, order_data):
 def notify_courier_reassignment(courier_id, order_id, action):
     try:
         cid = str(courier_id)
-        
+
         if cid in courier_connections:
             socketio.emit('order_reassigned', {
                 'order_id': order_id,
                 'action': action
             }, room=f'courier_{cid}')
-        
+
         return True
     except Exception as e:
         app.logger.error(f"❌ Reassign notify error: {e}")
@@ -646,10 +603,7 @@ def check_password(password, hashed):
         return False
 
 def generate_token(user_id, role):
-    # Güvenli: iat/exp olarak integer unix timestamp kullan
-    iat = int(time.time())
-    exp = iat + TOKEN_EXP_HOURS * 3600
-    payload = {"user_id": user_id, "role": role, "iat": iat, "exp": exp}
+    payload = {"user_id": user_id, "role": role, "exp": datetime.utcnow() + timedelta(hours=TOKEN_EXP_HOURS)}
     token = jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
     return token.decode("utf-8") if isinstance(token, bytes) else token
 
@@ -675,6 +629,7 @@ def token_required(f):
         except jwt.InvalidTokenError:
             return jsonify({"message": "Geçersiz token"}), 401
         return f(*args, **kwargs)
+
     return wrapped
 
 def admin_required(f):
@@ -684,6 +639,7 @@ def admin_required(f):
         if getattr(request, "user_role", None) != "admin":
             return jsonify({"message": "Admin yetkisi gerekli"}), 403
         return f(*args, **kwargs)
+
     return wrapped
 
 def courier_required(f):
@@ -693,6 +649,7 @@ def courier_required(f):
         if getattr(request, "user_role", None) != "courier":
             return jsonify({"message": "Kurye yetkisi gerekli"}), 403
         return f(*args, **kwargs)
+
     return wrapped
 
 def restaurant_required(f):
@@ -702,6 +659,7 @@ def restaurant_required(f):
         if getattr(request, "user_role", None) != "restaurant":
             return jsonify({"message": "Restoran yetkisi gerekli"}), 403
         return f(*args, **kwargs)
+
     return wrapped
 
 # Neighborhood & Assignment
@@ -725,33 +683,36 @@ def get_or_create_neighborhood(name):
     result = execute_with_retry("SELECT id FROM neighborhoods WHERE name = ?", (name,))
     if result and len(result) > 0:
         return result[0]["id"]
-    # Mahalle oluştururken UTC kullanıyoruz
-    execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)", (name, get_utc_time().isoformat()))
+    execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)",
+                             (name, format_datetime_for_storage()))
     result = execute_with_retry("SELECT id FROM neighborhoods WHERE name = ?", (name,))
     return result[0]["id"] if result and len(result) > 0 else None
 
 def ensure_courier_performance(courier_id):
     result = execute_with_retry("SELECT 1 FROM courier_performance WHERE courier_id = ?", (courier_id,))
     if not result or len(result) == 0:
-        execute_write_with_retry("INSERT INTO courier_performance (courier_id, last_assigned) VALUES (?, ?)", (courier_id, get_utc_time().isoformat()))
+        execute_write_with_retry("INSERT INTO courier_performance (courier_id, last_assigned) VALUES (?, ?)",
+                                 (courier_id, format_datetime_for_storage()))
 
 def set_courier_cooldown(courier_id, neighborhood_id):
-    cooldown = (get_utc_time() + timedelta(minutes=3)).isoformat()
-    execute_write_with_retry("UPDATE courier_performance SET cooldown_until = ?, current_neighborhood_id = ? WHERE courier_id = ?", (cooldown, neighborhood_id, courier_id))
+    cooldown = (datetime.utcnow() + timedelta(minutes=3)).isoformat()
+    execute_write_with_retry(
+        "UPDATE courier_performance SET cooldown_until = ?, current_neighborhood_id = ? WHERE courier_id = ?",
+        (cooldown, neighborhood_id, courier_id))
 
 def assign_order_to_courier(order_id):
     result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
     if not result or len(result) == 0:
         return False
-    
+
     order = row_to_dict(result[0])
     neighborhood_id = None
     neighborhood_name = extract_neighborhood(order["address"])
-    
+
     if neighborhood_name:
         neighborhood_id = get_or_create_neighborhood(neighborhood_name)
         execute_write_with_retry("UPDATE orders SET neighborhood_id = ? WHERE id = ?", (neighborhood_id, order_id))
-    
+
     result = execute_with_retry("""
         SELECT c.id, COALESCE(cp.daily_orders, 0) as daily_orders
         FROM couriers c
@@ -760,20 +721,22 @@ def assign_order_to_courier(order_id):
         ORDER BY daily_orders ASC, c.id ASC
         LIMIT 1
     """)
-    
+
     if result and len(result) > 0:
         courier = row_to_dict(result[0])
         courier_id = courier["id"]
-        
+
         execute_write_with_retry("UPDATE orders SET courier_id = ? WHERE id = ?", (courier_id, order_id))
         execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
-        
+
         ensure_courier_performance(courier_id)
-        execute_write_with_retry("UPDATE courier_performance SET daily_orders = daily_orders + 1, total_orders = total_orders + 1, last_assigned = ? WHERE courier_id = ?", (get_utc_time().isoformat(), courier_id))
-        
+        execute_write_with_retry(
+            "UPDATE courier_performance SET daily_orders = daily_orders + 1, total_orders = total_orders + 1, last_assigned = ? WHERE courier_id = ?",
+            (format_datetime_for_storage(), courier_id))
+
         if neighborhood_id:
             set_courier_cooldown(courier_id, neighborhood_id)
-        
+
         order_result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
         if order_result and len(order_result) > 0:
             order = row_to_dict(order_result[0])
@@ -785,9 +748,9 @@ def assign_order_to_courier(order_id):
                 'total_amount': order['total_amount'],
                 'items': order['items']
             })
-        
+
         return True
-    
+
     return False
 
 # FCM Token Endpoint
@@ -806,14 +769,9 @@ def update_fcm_token(courier_id):
         return jsonify({"message": "FCM token gerekli"}), 400
 
     try:
-        # GEÇİCİ FIX: Validation'ı atla, sadece kaydet
-        # TODO: Firebase key sorununu düzelttikten sonra validation'ı geri ekle
         if firebase_app:
             app.logger.warning(f"⚠️ Token kaydediliyor (validation atlandı): {fcm_token[:15]}...")
-            # is_valid = validate_fcm_token(fcm_token)
-            # if not is_valid:
-            #     return jsonify({"message": "Geçersiz FCM token"}), 400
-        
+
         success = execute_write_with_retry("UPDATE couriers SET fcm_token = ? WHERE id = ?", (fcm_token, courier_id))
 
         if success:
@@ -900,7 +858,8 @@ def auth_register():
             name = data.get("restaurant_name") or f"Restaurant {restaurant_id}"
             execute_write_with_retry(
                 "INSERT INTO restaurants (restaurant_id, name, fee_per_package, address, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (restaurant_id, name, data.get("fee_per_package", 5.0), data.get("address", ""), phone, get_utc_time().isoformat())
+                (restaurant_id, name, data.get("fee_per_package", 5.0), data.get("address", ""), phone,
+                 format_datetime_for_storage())
             )
 
     if role == "courier":
@@ -917,12 +876,12 @@ def auth_register():
         if role == "restaurant":
             execute_write_with_retry(
                 "INSERT INTO users (username, password_hash, role, created_at, restaurant_id) VALUES (?, ?, ?, ?, ?)",
-                (username, hashed, role, get_utc_time().isoformat(), restaurant_id)
+                (username, hashed, role, format_datetime_for_storage(), restaurant_id)
             )
         else:
             execute_write_with_retry(
                 "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
-                (username, hashed, role, get_utc_time().isoformat())
+                (username, hashed, role, format_datetime_for_storage())
             )
 
         result = execute_with_retry("SELECT id FROM users WHERE username = ?", (username,))
@@ -935,7 +894,8 @@ def auth_register():
         if role == "courier":
             execute_write_with_retry(
                 "INSERT INTO couriers (user_id, first_name, last_name, email, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, data.get("first_name", ""), data.get("last_name", ""), data.get("email"), data.get("phone"), get_utc_time().isoformat())
+                (user_id, data.get("first_name", ""), data.get("last_name", ""), data.get("email"), data.get("phone"),
+                 format_datetime_for_storage())
             )
             result = execute_with_retry("SELECT * FROM couriers WHERE user_id = ?", (user_id,))
             if result and len(result) > 0:
@@ -944,7 +904,7 @@ def auth_register():
     except sqlite3.IntegrityError as e:
         return jsonify({"message": "Kullanıcı adı veya email/phone zaten var", "error": str(e)}), 400
 
-    user_resp = {"id": user_id, "username": username, "role": role, "created_at": get_utc_time().isoformat()}
+    user_resp = {"id": user_id, "username": username, "role": role, "created_at": format_datetime_for_display(format_datetime_for_storage())}
     if role == "courier":
         user_resp["courier"] = courier_obj
     elif role == "restaurant":
@@ -976,11 +936,13 @@ def auth_login():
         "id": user_id,
         "username": user_row["username"],
         "role": role,
-        "created_at": user_row["created_at"]
+        "created_at": format_datetime_for_display(user_row["created_at"])
     }
 
     if role == "courier":
-        result = execute_with_retry("SELECT id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?", (user_id,))
+        result = execute_with_retry(
+            "SELECT id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?",
+            (user_id,))
         if result and len(result) > 0:
             user_out["courier"] = row_to_dict(result[0])
 
@@ -999,7 +961,9 @@ def me():
 
     user = row_to_dict(result[0])
     if user["role"] == "courier":
-        result = execute_with_retry("SELECT id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?", (uid,))
+        result = execute_with_retry(
+            "SELECT id, first_name, last_name, email, phone, status, created_at FROM couriers WHERE user_id = ?",
+            (uid,))
         if result and len(result) > 0:
             user["courier"] = row_to_dict(result[0])
     elif user["role"] == "restaurant":
@@ -1030,7 +994,7 @@ def admin_create_courier():
     try:
         execute_write_with_retry(
             "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, 'courier', ?)",
-            (username, hashed, get_utc_time().isoformat())
+            (username, hashed, format_datetime_for_storage())
         )
 
         result = execute_with_retry("SELECT id FROM users WHERE username = ?", (username,))
@@ -1038,7 +1002,8 @@ def admin_create_courier():
 
         execute_write_with_retry(
             "INSERT INTO couriers (user_id, first_name, last_name, email, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, data.get("first_name", ""), data.get("last_name", ""), data.get("email"), phone, get_utc_time().isoformat())
+            (user_id, data.get("first_name", ""), data.get("last_name", ""), data.get("email"), phone,
+             format_datetime_for_storage())
         )
 
         result = execute_with_retry("SELECT * FROM couriers WHERE user_id = ?", (user_id,))
@@ -1046,7 +1011,7 @@ def admin_create_courier():
 
         return jsonify({
             "message": "Kurye oluşturuldu",
-            "user": {"id": user_id, "username": username, "role": "courier"},
+            "user": {"id": user_id, "username": username, "role": "courier", "created_at": format_datetime_for_display(format_datetime_for_storage())},
             "courier": courier_obj
         }), 201
 
@@ -1062,14 +1027,18 @@ def admin_reassign_order(order_id):
     if not new_courier_id:
         return jsonify({"message": "new_courier_id gerekli"}), 400
 
-    result = execute_with_retry("SELECT o.*, c.id as current_courier_id FROM orders o LEFT JOIN couriers c ON o.courier_id = c.id WHERE o.id = ?", (order_id,))
+    result = execute_with_retry(
+        "SELECT o.*, c.id as current_courier_id FROM orders o LEFT JOIN couriers c ON o.courier_id = c.id WHERE o.id = ?",
+        (order_id,))
     if not result or len(result) == 0:
         return jsonify({"message": "Sipariş bulunamadı"}), 404
 
     order = row_to_dict(result[0])
     current_courier_id = order["current_courier_id"]
 
-    result = execute_with_retry("SELECT id, first_name, last_name FROM couriers WHERE id = ? AND status IN ('boşta', 'teslimatta')", (new_courier_id,))
+    result = execute_with_retry(
+        "SELECT id, first_name, last_name FROM couriers WHERE id = ? AND status IN ('boşta', 'teslimatta')",
+        (new_courier_id,))
     if not result or len(result) == 0:
         return jsonify({"message": "Yeni kurye bulunamadı"}), 404
 
@@ -1081,25 +1050,31 @@ def admin_reassign_order(order_id):
     if current_courier_id == new_courier_id:
         return jsonify({"message": "Sipariş zaten bu kuryede"}), 400
 
-    # İstanbul zamanını DB kaydı için kullanıyoruz (isteğiniz üzerine)
-    now = get_istanbul_time_string()
+    now = format_datetime_for_storage()
 
     try:
         if current_courier_id:
-            result = execute_with_retry("SELECT COUNT(*) as cnt FROM orders WHERE courier_id = ? AND status IN ('yeni', 'teslim alındı') AND id != ?", (current_courier_id, order_id))
+            result = execute_with_retry(
+                "SELECT COUNT(*) as cnt FROM orders WHERE courier_id = ? AND status IN ('yeni', 'teslim alındı') AND id != ?",
+                (current_courier_id, order_id))
             if result and result[0]["cnt"] == 0:
                 execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (current_courier_id,))
-            execute_write_with_retry("UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?", (current_courier_id,))
+            execute_write_with_retry(
+                "UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?",
+                (current_courier_id,))
             notify_courier_reassignment(current_courier_id, order_id, "removed")
 
-        execute_write_with_retry("UPDATE orders SET courier_id = ?, status = 'teslim alındı', updated_at = ? WHERE id = ?", (new_courier_id, now, order_id))
+        execute_write_with_retry(
+            "UPDATE orders SET courier_id = ?, status = 'teslim alındı', updated_at = ? WHERE id = ?",
+            (new_courier_id, now, order_id))
         execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (new_courier_id,))
         ensure_courier_performance(new_courier_id)
 
         if order.get("neighborhood_id"):
             set_courier_cooldown(new_courier_id, order["neighborhood_id"])
 
-        execute_write_with_retry("INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+        execute_write_with_retry(
+            "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
             (order_id, new_courier_id, 'reassigned', f'Yeniden atandı', now))
 
         result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
@@ -1128,7 +1103,8 @@ def admin_reassign_order(order_id):
 @admin_required
 def list_users():
     result = execute_with_retry("SELECT id, username, role, created_at, restaurant_id FROM users")
-    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+    users = [row_to_dict(r) for r in result] if result else []
+    return jsonify(users)
 
 @app.route("/users/<int:user_id>", methods=["PATCH"])
 @admin_required
@@ -1163,8 +1139,10 @@ def delete_user(user_id):
 @app.route("/couriers", methods=["GET"])
 @admin_required
 def admin_list_couriers():
-    result = execute_with_retry("SELECT id, user_id, first_name, last_name, email, phone, status, created_at, fcm_token FROM couriers")
-    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+    result = execute_with_retry(
+        "SELECT id, user_id, first_name, last_name, email, phone, status, created_at, fcm_token FROM couriers")
+    couriers = [row_to_dict(r) for r in result] if result else []
+    return jsonify(couriers)
 
 @app.route("/couriers/<int:courier_id>", methods=["PATCH"])
 @admin_required
@@ -1195,7 +1173,8 @@ def admin_delete_courier(courier_id):
 @app.route("/couriers/<int:courier_id>/reset-performance", methods=["POST"])
 @admin_required
 def reset_courier_performance(courier_id):
-    execute_write_with_retry("UPDATE courier_performance SET daily_orders = 0, total_orders = 0 WHERE courier_id = ?", (courier_id,))
+    execute_write_with_retry("UPDATE courier_performance SET daily_orders = 0, total_orders = 0 WHERE courier_id = ?",
+                             (courier_id,))
     return jsonify({"message": "Performans sıfırlandı"})
 
 @app.route("/admin/assign-orders", methods=["POST"])
@@ -1231,7 +1210,9 @@ def admin_reports_orders():
     except:
         return jsonify({"message": "Tarih formatı YYYY-MM-DD"}), 400
 
-    result = execute_with_retry("SELECT status, COUNT(*) as cnt FROM orders WHERE created_at >= ? AND created_at < ? GROUP BY status", (start_dt.isoformat(), end_dt.isoformat()))
+    result = execute_with_retry(
+        "SELECT status, COUNT(*) as cnt FROM orders WHERE created_at >= ? AND created_at < ? GROUP BY status",
+        (start_dt.isoformat(), end_dt.isoformat()))
     status_counts = {row["status"]: row["cnt"] for row in result} if result else {}
 
     return jsonify({"status_counts": status_counts, "period": {"start": start, "end": end}})
@@ -1261,8 +1242,10 @@ def courier_get_orders(courier_id):
         if not result or row_to_dict(result[0])["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
 
-    result = execute_with_retry("SELECT * FROM orders WHERE courier_id = ? AND status IN ('yeni','teslim alındı')", (courier_id,))
-    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+    result = execute_with_retry("SELECT * FROM orders WHERE courier_id = ? AND status IN ('yeni','teslim alındı')",
+                                (courier_id,))
+    orders = [row_to_dict(r) for r in result] if result else []
+    return jsonify(orders)
 
 @app.route("/couriers/<int:courier_id>/orders/<int:order_id>/pickup", methods=["POST"])
 @token_required
@@ -1280,11 +1263,11 @@ def courier_pickup_order(courier_id, order_id):
     if order["status"] != "yeni":
         return jsonify({"message": "Sipariş zaten alınmış"}), 400
 
-    # İstanbul zamanını kullanıyoruz (DB kaydı)
-    now = get_istanbul_time_string()
+    now = format_datetime_for_storage()
     execute_write_with_retry("UPDATE orders SET status = 'teslim alındı', updated_at = ? WHERE id = ?", (now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
-    execute_write_with_retry("INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+    execute_write_with_retry(
+        "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
         (order_id, courier_id, 'teslim alındı', 'Teslim alındı', now))
 
     return jsonify({"message": "Sipariş teslim alındı"})
@@ -1305,12 +1288,14 @@ def courier_deliver_order(courier_id, order_id):
     if order["status"] != "teslim alındı":
         return jsonify({"message": "Sipariş teslim alınmamış"}), 400
 
-    # İstanbul zamanını kullanıyoruz (DB kaydı)
-    now = get_istanbul_time_string()
+    now = format_datetime_for_storage()
     execute_write_with_retry("UPDATE orders SET status = 'teslim edildi', updated_at = ? WHERE id = ?", (now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
-    execute_write_with_retry("UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?", (courier_id,))
-    execute_write_with_retry("INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+    execute_write_with_retry(
+        "UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?",
+        (courier_id,))
+    execute_write_with_retry(
+        "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
         (order_id, courier_id, 'teslim edildi', 'Teslim edildi', now))
 
     return jsonify({"message": "Sipariş teslim edildi"})
@@ -1332,12 +1317,16 @@ def courier_fail_order(courier_id, order_id):
     if not result or len(result) == 0:
         return jsonify({"message": "Sipariş bulunamadı"}), 404
 
-    # İstanbul zamanını kullanıyoruz (DB kaydı)
-    now = get_istanbul_time_string()
-    execute_write_with_retry("UPDATE orders SET status = 'teslim edilemedi', delivery_failed_reason = ?, updated_at = ? WHERE id = ?", (reason, now, order_id))
+    now = format_datetime_for_storage()
+    execute_write_with_retry(
+        "UPDATE orders SET status = 'teslim edilemedi', delivery_failed_reason = ?, updated_at = ? WHERE id = ?",
+        (reason, now, order_id))
     execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
-    execute_write_with_retry("UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?", (courier_id,))
-    execute_write_with_retry("INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+    execute_write_with_retry(
+        "UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?",
+        (courier_id,))
+    execute_write_with_retry(
+        "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
         (order_id, courier_id, 'teslim edilemedi', f'Başarısız: {reason}', now))
 
     return jsonify({"message": "Başarısız işaretlendi"})
@@ -1350,8 +1339,11 @@ def courier_delivery_history(courier_id):
         if not result or row_to_dict(result[0])["user_id"] != request.user_id:
             return jsonify({"message": "Yetkisiz"}), 403
 
-    result = execute_with_retry("SELECT dh.*, o.customer_name, o.address FROM delivery_history dh JOIN orders o ON dh.order_id = o.id WHERE dh.courier_id = ? ORDER BY dh.created_at DESC", (courier_id,))
-    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+    result = execute_with_retry(
+        "SELECT dh.*, o.customer_name, o.address FROM delivery_history dh JOIN orders o ON dh.order_id = o.id WHERE dh.courier_id = ? ORDER BY dh.created_at DESC",
+        (courier_id,))
+    history = [row_to_dict(r) for r in result] if result else []
+    return jsonify(history)
 
 # Restaurant Endpoints
 @app.route("/restaurants/orders", methods=["GET"])
@@ -1363,7 +1355,8 @@ def restaurant_get_orders():
 
     rid = row_to_dict(result[0])["restaurant_id"]
     result = execute_with_retry("SELECT * FROM orders WHERE vendor_id = ? ORDER BY created_at DESC", (rid,))
-    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+    orders = [row_to_dict(r) for r in result] if result else []
+    return jsonify(orders)
 
 @app.route("/restaurants/orders/<int:order_id>", methods=["GET"])
 @restaurant_required
@@ -1390,11 +1383,8 @@ def webhook_yemeksepeti():
     total = data.get("total") or data.get("total_amount") or 0
     address = data.get("address") or data.get("customer_address")
     payload = json.dumps(data, ensure_ascii=False)
-    
-    # İstanbul zamanını kullanarak DB'ye kaydet (isteğiniz üzerine)
-    istanbul_time = get_istanbul_time()
-    created = istanbul_time.isoformat()
-    order_uuid = f"o-{int(istanbul_time.timestamp() * 1000)}"
+    created = format_datetime_for_storage()
+    order_uuid = f"o-{int(datetime.utcnow().timestamp() * 1000)}"
 
     try:
         ok = execute_write_with_retry(
@@ -1439,7 +1429,8 @@ def admin_list_orders():
     else:
         result = execute_with_retry("SELECT * FROM orders ORDER BY created_at DESC")
 
-    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+    orders = [row_to_dict(r) for r in result] if result else []
+    return jsonify(orders)
 
 @app.route("/orders/<int:order_id>", methods=["PATCH"])
 @admin_required
@@ -1454,9 +1445,8 @@ def admin_patch_order(order_id):
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
 
-    # İstanbul zamanını DB güncelleme için kullan
     fields.append("updated_at = ?")
-    values.append(get_istanbul_time_string())
+    values.append(format_datetime_for_storage())
     values.append(order_id)
 
     execute_write_with_retry(f"UPDATE orders SET {', '.join(fields)} WHERE id = ?", values)
@@ -1473,7 +1463,8 @@ def admin_delete_order(order_id):
 @admin_required
 def list_restaurants():
     result = execute_with_retry("SELECT * FROM restaurants ORDER BY name")
-    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+    restaurants = [row_to_dict(r) for r in result] if result else []
+    return jsonify(restaurants)
 
 @app.route("/restaurants", methods=["POST"])
 @admin_required
@@ -1502,15 +1493,17 @@ def create_restaurant():
     try:
         execute_write_with_retry(
             "INSERT INTO users (username, password_hash, role, created_at, restaurant_id) VALUES (?, ?, 'restaurant', ?, ?)",
-            (username, hashed, get_utc_time().isoformat(), restaurant_id)
+            (username, hashed, format_datetime_for_storage(), restaurant_id)
         )
 
         execute_write_with_retry(
             "INSERT INTO restaurants (restaurant_id, name, fee_per_package, address, phone, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (restaurant_id, name, data.get("fee_per_package", 5.0), data.get("address", ""), phone, data.get("is_active", 1), get_utc_time().isoformat())
+            (restaurant_id, name, data.get("fee_per_package", 5.0), data.get("address", ""), phone,
+             data.get("is_active", 1), format_datetime_for_storage())
         )
 
-        user_row = execute_with_retry("SELECT id, username, role, created_at, restaurant_id FROM users WHERE username = ?", (username,))
+        user_row = execute_with_retry(
+            "SELECT id, username, role, created_at, restaurant_id FROM users WHERE username = ?", (username,))
         rest_row = execute_with_retry("SELECT * FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
 
         return jsonify({
@@ -1565,7 +1558,8 @@ def delete_restaurant(restaurant_id):
 @token_required
 def list_neighborhoods():
     result = execute_with_retry("SELECT * FROM neighborhoods ORDER BY name")
-    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+    neighborhoods = [row_to_dict(r) for r in result] if result else []
+    return jsonify(neighborhoods)
 
 @app.route("/neighborhoods", methods=["POST"])
 @admin_required
@@ -1577,7 +1571,8 @@ def create_neighborhood():
         return jsonify({"message": "Mahalle adı gerekli"}), 400
 
     try:
-        execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)", (name, get_utc_time().isoformat()))
+        execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)",
+                                 (name, format_datetime_for_storage()))
         result = execute_with_retry("SELECT * FROM neighborhoods WHERE name = ?", (name,))
         neighborhood = row_to_dict(result[0]) if result and len(result) > 0 else None
         return jsonify({"message": "Mahalle oluşturuldu", "neighborhood": neighborhood}), 201
@@ -1593,30 +1588,36 @@ def delete_neighborhood(neighborhood_id):
 # Health Check
 @app.route("/")
 def health():
-    return jsonify({"status": "ok", "time": get_utc_time().isoformat(), "istanbul_time": get_istanbul_time().isoformat()})
+    istanbul_time = get_istanbul_time().strftime("%Y-%m-%d %H:%M:%S")
+    return jsonify({
+        "status": "ok", 
+        "server_time_utc": datetime.utcnow().isoformat(),
+        "server_time_istanbul": istanbul_time
+    })
 
 if __name__ == "__main__":
     init_db()
     app.logger.info("🚀 Flask başlatılıyor...")
     check_firebase_setup()
-    
-    # SUNUCU / PROCESS SAATİ KONTROLÜ - LOG
-    now_utc = get_utc_time()
-    now_ist = get_istanbul_time()
+
+    # SUNUCU SAATİ KONTROLÜ
+    now_utc = datetime.utcnow()
+    now_istanbul = get_istanbul_time()
     app.logger.info(f"⏰ UTC zamanı: {now_utc.isoformat()}")
-    app.logger.info(f"⏰ İstanbul zamanı: {now_ist.isoformat()}")
-    
+    app.logger.info(f"⏰ İstanbul zamanı: {now_istanbul.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    import time
     offset = time.timezone if not time.daylight else time.altzone
     offset_hours = -offset / 3600
-    app.logger.info(f"⏰ UTC offset (process): {offset_hours:+.1f} saat")
-    app.logger.info(f"TIME-DEBUG final: TZ env={os.environ.get('TZ')}, tzname={time.tzname}, timezone={time.timezone}, altzone={getattr(time, 'altzone', 'NA')}")
-    
+    app.logger.info(f"⏰ UTC offset: {offset_hours:+.1f} saat")
+
     if abs(offset_hours) > 0.5:
-        app.logger.warning("⚠️ UYARI: Process UTC değil! Firebase için sorun olabilir.")
-        app.logger.warning("   Çözüm: sudo timedatectl set-timezone UTC veya process-level os.environ['TZ']='UTC' + time.tzset()")
-    
+        app.logger.warning("⚠️ UYARI: Sunucu UTC değil! Firebase için sorun olabilir.")
+        app.logger.warning("   Çözüm: sudo timedatectl set-timezone UTC")
+
     app.logger.info("✅ Veritabanı hazır")
     app.logger.info("✅ WebSocket aktif")
     app.logger.info("✅ Zamanlayıcı aktif")
+    app.logger.info("✅ İstanbul saat dilimi aktif")
 
     socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
