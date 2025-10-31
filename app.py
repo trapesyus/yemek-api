@@ -237,6 +237,31 @@ def execute_write_with_retry(query, params=None, max_retries=5):
                 raise
     return False
 
+# Total Amount Helper Function
+def parse_total_amount(amount):
+    """
+    Total amount değerini double'a çevirir
+    String gelirse temizler ve float'a çevirir
+    """
+    if amount is None:
+        return 0.0
+    
+    try:
+        if isinstance(amount, str):
+            # TL, ₺, virgül, boşluk gibi karakterleri temizle
+            cleaned = re.sub(r'[^\d.,]', '', str(amount).strip())
+            # Virgülü noktaya çevir
+            cleaned = cleaned.replace(',', '.')
+            # Birden fazla nokta varsa son noktayı kullan
+            if cleaned.count('.') > 1:
+                parts = cleaned.split('.')
+                cleaned = '.'.join(parts[:-1]) + '.' + parts[-1]
+            return float(cleaned)
+        else:
+            return float(amount)
+    except (ValueError, TypeError):
+        return 0.0
+
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
@@ -1413,7 +1438,10 @@ def webhook_yemeksepeti():
     vendor_id = str(data.get("vendor_id")) if data.get("vendor_id") else None
     customer_name = data.get("customer_name") or data.get("customer")
     items = data.get("items")
-    total = data.get("total") or data.get("total_amount") or 0
+    
+    # TOTAL AMOUNT DÜZENLEMESİ - STRING'DEN DOUBLE'A ÇEVİR
+    total = parse_total_amount(data.get("total") or data.get("total_amount") or 0)
+    
     address = data.get("address") or data.get("customer_address")
     payload = json.dumps(data, ensure_ascii=False)
     created = datetime.utcnow().isoformat()
@@ -1473,7 +1501,11 @@ def admin_patch_order(order_id):
     for k in allowed:
         if k in data:
             fields.append(f"{k} = ?")
-            values.append(data[k])
+            # TOTAL AMOUNT DÜZENLEMESİ
+            if k == "total_amount":
+                values.append(parse_total_amount(data[k]))
+            else:
+                values.append(data[k])
     if not fields:
         return jsonify({"message": "Güncellenecek alan yok"}), 400
 
@@ -1483,7 +1515,6 @@ def admin_patch_order(order_id):
 
     execute_write_with_retry(f"UPDATE orders SET {', '.join(fields)} WHERE id = ?", values)
     return jsonify({"message": "Sipariş güncellendi"})
-
 
 @app.route("/orders/<int:order_id>", methods=["DELETE"])
 @admin_required
