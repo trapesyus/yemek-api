@@ -381,6 +381,81 @@ def reset_monthly_counts():
     except Exception as e:
         app.logger.error(f"❌ Aylık sıfırlama hatası: {e}")
 
+# Password & JWT
+def hash_password(password):
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+
+def _normalize_hash(h):
+    if isinstance(h, memoryview):
+        return bytes(h)
+    if isinstance(h, str):
+        return h.encode("utf-8")
+    return h
+
+def check_password(password, hashed):
+    if not hashed:
+        return False
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), _normalize_hash(hashed))
+    except:
+        return False
+
+def generate_token(user_id, role):
+    payload = {"user_id": user_id, "role": role, "exp": datetime.utcnow() + timedelta(hours=TOKEN_EXP_HOURS)}
+    token = jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return token.decode("utf-8") if isinstance(token, bytes) else token
+
+def decode_token(token):
+    return jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
+
+# DECORATOR TANIMLARI - EN ÜSTTE OLMALI
+def token_required(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        auth = request.headers.get("Authorization", "")
+        token = None
+        if auth.startswith("Bearer "):
+            token = auth.split(" ", 1)[1].strip()
+        if not token:
+            return jsonify({"message": "Token gerekli"}), 401
+        try:
+            data = decode_token(token)
+            request.user_id = data.get("user_id")
+            request.user_role = data.get("role")
+        except jwt.ExpiredSignatureError:
+            return jsonify({"message": "Token süresi dolmuş"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"message": "Geçersiz token"}), 401
+        return f(*args, **kwargs)
+    return wrapped
+
+def admin_required(f):
+    @wraps(f)
+    @token_required
+    def wrapped(*args, **kwargs):
+        if getattr(request, "user_role", None) != "admin":
+            return jsonify({"message": "Admin yetkisi gerekli"}), 403
+        return f(*args, **kwargs)
+    return wrapped
+
+def courier_required(f):
+    @wraps(f)
+    @token_required
+    def wrapped(*args, **kwargs):
+        if getattr(request, "user_role", None) != "courier":
+            return jsonify({"message": "Kurye yetkisi gerekli"}), 403
+        return f(*args, **kwargs)
+    return wrapped
+
+def restaurant_required(f):
+    @wraps(f)
+    @token_required
+    def wrapped(*args, **kwargs):
+        if getattr(request, "user_role", None) != "restaurant":
+            return jsonify({"message": "Restoran yetkisi gerekli"}), 403
+        return f(*args, **kwargs)
+    return wrapped
+
 # YENİ AYLIK RAPOR FONKSİYONU
 def generate_monthly_report():
     try:
@@ -733,81 +808,6 @@ def notify_courier_reassignment(courier_id, order_id, action):
     except Exception as e:
         app.logger.error(f"❌ Reassign notify error: {e}")
         return False
-
-# Password & JWT
-def hash_password(password):
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
-
-def _normalize_hash(h):
-    if isinstance(h, memoryview):
-        return bytes(h)
-    if isinstance(h, str):
-        return h.encode("utf-8")
-    return h
-
-def check_password(password, hashed):
-    if not hashed:
-        return False
-    try:
-        return bcrypt.checkpw(password.encode("utf-8"), _normalize_hash(hashed))
-    except:
-        return False
-
-def generate_token(user_id, role):
-    payload = {"user_id": user_id, "role": role, "exp": datetime.utcnow() + timedelta(hours=TOKEN_EXP_HOURS)}
-    token = jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
-    return token.decode("utf-8") if isinstance(token, bytes) else token
-
-def decode_token(token):
-    return jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
-
-# Decorators
-def token_required(f):
-    @wraps(f)
-    def wrapped(*args, **kwargs):
-        auth = request.headers.get("Authorization", "")
-        token = None
-        if auth.startswith("Bearer "):
-            token = auth.split(" ", 1)[1].strip()
-        if not token:
-            return jsonify({"message": "Token gerekli"}), 401
-        try:
-            data = decode_token(token)
-            request.user_id = data.get("user_id")
-            request.user_role = data.get("role")
-        except jwt.ExpiredSignatureError:
-            return jsonify({"message": "Token süresi dolmuş"}), 401
-        except jwt.InvalidTokenError:
-            return jsonify({"message": "Geçersiz token"}), 401
-        return f(*args, **kwargs)
-    return wrapped
-
-def admin_required(f):
-    @wraps(f)
-    @token_required
-    def wrapped(*args, **kwargs):
-        if getattr(request, "user_role", None) != "admin":
-            return jsonify({"message": "Admin yetkisi gerekli"}), 403
-        return f(*args, **kwargs)
-    return wrapped
-
-def courier_required(f):
-    @wraps(f)
-    @token_required
-    def wrapped(*args, **kwargs):
-        if getattr(request, "user_role", None) != "courier":
-            return jsonify({"message": "Kurye yetkisi gerekli"}), 403
-        return f(*args, **kwargs)
-    return wrapped
-
-def restaurant_required(f):
-    @wraps(f)
-    @token_required
-    def wrapped(*args, **kwargs):
-        if getattr(request, "user_role", None) != "restaurant":
-            return jsonify({"message": "Restoran yetkisi gerekli"}), 403
-        return f(*args, **kwargs)
-    return wrapped
 
 # FCM Token Endpoint
 @app.route("/couriers/<int:courier_id>/fcm-token", methods=["POST"])
