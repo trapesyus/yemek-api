@@ -9,12 +9,9 @@ import re
 import time
 import json
 import traceback
-import smtplib
 import os
 import logging
 from logging.handlers import RotatingFileHandler
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from functools import wraps
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -109,12 +106,6 @@ def check_firebase_setup():
 
 courier_connections = {}
 scheduler = BackgroundScheduler()
-
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-EMAIL_USERNAME = "hediyecennetti@gmail.com"
-EMAIL_PASSWORD = "brvl ucry jgml qnsn"
-REPORT_RECIPIENTS = {"email": ["emrulllahtoprak009@gmail.com"]}
 
 # FCM Fonksiyonları
 def validate_fcm_token(fcm_token):
@@ -390,163 +381,292 @@ def reset_monthly_counts():
     except Exception as e:
         app.logger.error(f"❌ Aylık sıfırlama hatası: {e}")
 
-def send_email(to_email, subject, html_content):
-    try:
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = EMAIL_USERNAME
-        msg['To'] = to_email
-        msg.attach(MIMEText(html_content, 'html'))
-
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-
-        app.logger.info(f"✅ Email gönderildi: {to_email}")
-        return True
-    except Exception as e:
-        app.logger.error(f"❌ Email hatası: {e}")
-        return False
-
+# YENİ AYLIK RAPOR FONKSİYONU
 def generate_monthly_report():
     try:
         today = datetime.utcnow()
-        first_day = today.replace(day=1)
-        last_day = first_day - timedelta(days=1)
-        first_prev = last_day.replace(day=1)
+        
+        # Önceki ayın ilk ve son gününü hesapla
+        first_day_of_current_month = today.replace(day=1)
+        last_day_of_previous_month = first_day_of_current_month - timedelta(days=1)
+        first_day_of_previous_month = last_day_of_previous_month.replace(day=1)
 
-        start = first_prev.strftime("%Y-%m-%d")
-        end = last_day.strftime("%Y-%m-%d")
+        start_date = first_day_of_previous_month.strftime("%Y-%m-%d")
+        end_date = last_day_of_previous_month.strftime("%Y-%m-%d")
+
+        app.logger.info(f"📊 Aylık rapor için tarih aralığı: {start_date} - {end_date}")
 
         # Sipariş durumları
-        result = execute_with_retry(
-            "SELECT status, COUNT(*) as cnt FROM orders WHERE created_at >= ? AND created_at < ? GROUP BY status",
-            (start, f"{end} 23:59:59")
-        )
-        status_counts = {row["status"]: row["cnt"] for row in result} if result else {}
+        result = execute_with_retry("""
+            SELECT status, COUNT(*) as count 
+            FROM orders 
+            WHERE date(created_at) >= ? AND date(created_at) <= ?
+            GROUP BY status
+        """, (start_date, end_date))
+        
+        status_counts = {}
+        if result:
+            for row in result:
+                status_counts[row["status"]] = row["count"]
 
         # Kurye performansları
         result = execute_with_retry("""
-            SELECT c.id, c.first_name, c.last_name, cp.monthly_orders 
-            FROM couriers c 
-            JOIN courier_performance cp ON c.id = cp.courier_id 
-            WHERE cp.monthly_orders > 0
-        """)
-        courier_stats = [row_to_dict(row) for row in result] if result else []
+            SELECT 
+                c.id,
+                c.first_name || ' ' || c.last_name as courier_name,
+                cp.monthly_orders,
+                COUNT(DISTINCT o.id) as delivered_orders
+            FROM couriers c
+            LEFT JOIN courier_performance cp ON c.id = cp.courier_id
+            LEFT JOIN orders o ON c.id = o.courier_id 
+                AND o.status = 'teslim edildi' 
+                AND date(o.created_at) >= ? AND date(o.created_at) <= ?
+            GROUP BY c.id, c.first_name, c.last_name, cp.monthly_orders
+            HAVING cp.monthly_orders > 0 OR delivered_orders > 0
+            ORDER BY cp.monthly_orders DESC
+        """, (start_date, end_date))
+        
+        courier_stats = []
+        if result:
+            for row in result:
+                courier_stats.append({
+                    "id": row["id"],
+                    "name": row["courier_name"],
+                    "monthly_orders": row["monthly_orders"] or 0,
+                    "delivered_orders": row["delivered_orders"] or 0
+                })
 
         # Restoran sipariş sayıları
         result = execute_with_retry("""
-            SELECT restaurant_id, name, monthly_order_count 
-            FROM restaurants 
-            WHERE monthly_order_count > 0
-        """)
-        restaurant_stats = [row_to_dict(row) for row in result] if result else []
+            SELECT 
+                restaurant_id, 
+                name, 
+                monthly_order_count,
+                COUNT(o.id) as actual_orders
+            FROM restaurants r
+            LEFT JOIN orders o ON r.restaurant_id = o.vendor_id 
+                AND date(o.created_at) >= ? AND date(o.created_at) <= ?
+            GROUP BY r.restaurant_id, r.name, r.monthly_order_count
+            HAVING monthly_order_count > 0 OR actual_orders > 0
+            ORDER BY monthly_order_count DESC
+        """, (start_date, end_date))
+        
+        restaurant_stats = []
+        if result:
+            for row in result:
+                restaurant_stats.append({
+                    "restaurant_id": row["restaurant_id"],
+                    "name": row["name"],
+                    "monthly_order_count": row["monthly_order_count"] or 0,
+                    "actual_orders": row["actual_orders"] or 0
+                })
 
-        return {
+        # Toplam istatistikler
+        total_orders = sum(status_counts.values())
+        successful_deliveries = status_counts.get('teslim edildi', 0)
+        failed_deliveries = status_counts.get('teslim edilemedi', 0)
+        success_rate = (successful_deliveries / total_orders * 100) if total_orders > 0 else 0
+
+        report_data = {
             'success': True,
-            'period': {'start': start, 'end': end},
+            'period': {
+                'start': start_date,
+                'end': end_date,
+                'month': first_day_of_previous_month.strftime("%Y-%m"),
+                'month_name': first_day_of_previous_month.strftime("%B %Y")
+            },
+            'summary': {
+                'total_orders': total_orders,
+                'successful_deliveries': successful_deliveries,
+                'failed_deliveries': failed_deliveries,
+                'success_rate': round(success_rate, 2),
+                'active_couriers': len([c for c in courier_stats if c['monthly_orders'] > 0]),
+                'active_restaurants': len([r for r in restaurant_stats if r['monthly_order_count'] > 0])
+            },
             'status_counts': status_counts,
             'courier_stats': courier_stats,
-            'restaurant_stats': restaurant_stats
+            'restaurant_stats': restaurant_stats,
+            'generated_at': datetime.utcnow().isoformat()
         }
+
+        app.logger.info(f"✅ Aylık rapor oluşturuldu: {total_orders} sipariş, {success_rate}% başarı oranı")
+        return report_data
+
     except Exception as e:
-        app.logger.error(f"❌ Rapor hatası: {e}")
+        app.logger.error(f"❌ Rapor oluşturma hatası: {e}")
         return {'success': False, 'error': str(e)}
 
-def format_report_for_email(report_data):
-    if not report_data.get('success'):
-        return f"Rapor hatası: {report_data.get('error')}", "Hata"
-
-    period = report_data['period']
-    subject = f"Aylık Rapor - {period['start']} - {period['end']}"
-
-    # Sipariş durumları
-    status_html = ""
-    for status, count in report_data['status_counts'].items():
-        status_html += f"<tr><td>{status}</td><td>{count}</td></tr>"
-
-    # Kurye performansları
-    courier_html = ""
-    for courier in report_data.get('courier_stats', []):
-        courier_html += f"<tr><td>{courier.get('first_name', '')} {courier.get('last_name', '')}</td><td>{courier.get('monthly_orders', 0)}</td></tr>"
-
-    # Restoran istatistikleri
-    restaurant_html = ""
-    for restaurant in report_data.get('restaurant_stats', []):
-        restaurant_html += f"<tr><td>{restaurant.get('name', '')}</td><td>{restaurant.get('monthly_order_count', 0)}</td></tr>"
-
-    html = f"""<html>
-    <head>
-        <style>
-            body {{ font-family: Arial, sans-serif; margin: 20px; }}
-            table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
-            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-            th {{ background-color: #f2f2f2; }}
-            .section {{ margin: 20px 0; }}
-        </style>
-    </head>
-    <body>
-        <h1>Aylık Teslimat Raporu</h1>
-        <p>Dönem: {period['start']} - {period['end']}</p>
-        <p>Oluşturulma: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</p>
+# YENİ GET ENDPOINT'I
+@app.route("/admin/monthly-report", methods=["GET"])
+@admin_required
+def get_monthly_report():
+    """
+    Aylık raporu getiren yeni endpoint
+    Query parametreleri:
+    - month: YYYY-MM formatında spesifik ay (opsiyonel)
+    - reset: true/false - rapor alındıktan sonra sayıları sıfırla (varsayılan: true)
+    """
+    try:
+        # Query parametreleri
+        specific_month = request.args.get('month')
+        reset_after = request.args.get('reset', 'true').lower() == 'true'
         
-        <div class="section">
-            <h2>Sipariş Durumları</h2>
-            <table>
-                <tr><th>Durum</th><th>Sayı</th></tr>
-                {status_html}
-            </table>
-        </div>
+        # Eğer spesifik ay belirtilmişse
+        if specific_month:
+            try:
+                # Belirtilen ayın ilk ve son gününü hesapla
+                target_date = datetime.strptime(specific_month, "%Y-%m")
+                first_day = target_date.replace(day=1)
+                if target_date.month == 12:
+                    last_day = target_date.replace(year=target_date.year + 1, month=1, day=1) - timedelta(days=1)
+                else:
+                    last_day = target_date.replace(month=target_date.month + 1, day=1) - timedelta(days=1)
+                
+                start_date = first_day.strftime("%Y-%m-%d")
+                end_date = last_day.strftime("%Y-%m-%d")
+                
+                # Özel sorgu için rapor oluştur
+                result = execute_with_retry("""
+                    SELECT status, COUNT(*) as count 
+                    FROM orders 
+                    WHERE date(created_at) >= ? AND date(created_at) <= ?
+                    GROUP BY status
+                """, (start_date, end_date))
+                
+                status_counts = {}
+                if result:
+                    for row in result:
+                        status_counts[row["status"]] = row["count"]
 
-        <div class="section">
-            <h2>Kurye Performansları</h2>
-            <table>
-                <tr><th>Kurye</th><th>Aylık Teslimat</th></tr>
-                {courier_html}
-            </table>
-        </div>
+                # Kurye performansları (belirtilen ay için)
+                result = execute_with_retry("""
+                    SELECT 
+                        c.id,
+                        c.first_name || ' ' || c.last_name as courier_name,
+                        COUNT(o.id) as delivered_orders
+                    FROM couriers c
+                    LEFT JOIN orders o ON c.id = o.courier_id 
+                        AND o.status = 'teslim edildi' 
+                        AND date(o.created_at) >= ? AND date(o.created_at) <= ?
+                    GROUP BY c.id, c.first_name, c.last_name
+                    HAVING delivered_orders > 0
+                    ORDER BY delivered_orders DESC
+                """, (start_date, end_date))
+                
+                courier_stats = []
+                if result:
+                    for row in result:
+                        courier_stats.append({
+                            "id": row["id"],
+                            "name": row["courier_name"],
+                            "delivered_orders": row["delivered_orders"]
+                        })
 
-        <div class="section">
-            <h2>Restoran Siparişleri</h2>
-            <table>
-                <tr><th>Restoran</th><th>Aylık Sipariş</th></tr>
-                {restaurant_html}
-            </table>
-        </div>
-    </body>
-    </html>"""
+                # Restoran sipariş sayıları (belirtilen ay için)
+                result = execute_with_retry("""
+                    SELECT 
+                        r.restaurant_id, 
+                        r.name, 
+                        COUNT(o.id) as actual_orders
+                    FROM restaurants r
+                    LEFT JOIN orders o ON r.restaurant_id = o.vendor_id 
+                        AND date(o.created_at) >= ? AND date(o.created_at) <= ?
+                    GROUP BY r.restaurant_id, r.name
+                    HAVING actual_orders > 0
+                    ORDER BY actual_orders DESC
+                """, (start_date, end_date))
+                
+                restaurant_stats = []
+                if result:
+                    for row in result:
+                        restaurant_stats.append({
+                            "restaurant_id": row["restaurant_id"],
+                            "name": row["name"],
+                            "actual_orders": row["actual_orders"]
+                        })
 
-    return html, subject
+                # Toplam istatistikler
+                total_orders = sum(status_counts.values())
+                successful_deliveries = status_counts.get('teslim edildi', 0)
+                failed_deliveries = status_counts.get('teslim edilemedi', 0)
+                success_rate = (successful_deliveries / total_orders * 100) if total_orders > 0 else 0
 
-def distribute_monthly_report():
+                custom_report = {
+                    'success': True,
+                    'period': {
+                        'start': start_date,
+                        'end': end_date,
+                        'month': specific_month,
+                        'month_name': first_day.strftime("%B %Y"),
+                        'custom_period': True
+                    },
+                    'summary': {
+                        'total_orders': total_orders,
+                        'successful_deliveries': successful_deliveries,
+                        'failed_deliveries': failed_deliveries,
+                        'success_rate': round(success_rate, 2),
+                        'active_couriers': len(courier_stats),
+                        'active_restaurants': len(restaurant_stats)
+                    },
+                    'status_counts': status_counts,
+                    'courier_stats': courier_stats,
+                    'restaurant_stats': restaurant_stats,
+                    'generated_at': datetime.utcnow().isoformat()
+                }
+
+                app.logger.info(f"✅ Özel aylık rapor oluşturuldu: {specific_month}")
+                return jsonify(custom_report)
+
+            except ValueError:
+                return jsonify({"success": False, "error": "Geçersiz ay formatı. YYYY-MM kullanın."}), 400
+        
+        # Normal aylık rapor
+        report_data = generate_monthly_report()
+        
+        # Rapor alındıktan sonra sayıları sıfırla (varsayılan davranış)
+        if reset_after and report_data.get('success'):
+            reset_monthly_counts()
+            app.logger.info("✅ Aylık sayılar sıfırlandı")
+        
+        return jsonify(report_data)
+
+    except Exception as e:
+        app.logger.error(f"❌ Rapor endpoint hatası: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ESKİ TRIGGER ENDPOINT'INI KALDIRIYORUZ VE YENİSİNİ EKLİYORUZ
+@app.route("/admin/trigger-monthly-report", methods=["GET"])
+@admin_required
+def trigger_monthly_report():
+    """
+    Aylık raporu tetikleyen yeni GET endpoint'i
+    """
     try:
         report_data = generate_monthly_report()
-        html, subject = format_report_for_email(report_data)
-
-        count = 0
-        for email in REPORT_RECIPIENTS.get('email', []):
-            if send_email(email, subject, html):
-                count += 1
-
-        if count > 0:
+        
+        # Rapor oluşturulduktan sonra sayıları sıfırla
+        if report_data.get('success'):
             reset_monthly_counts()
+            app.logger.info("✅ Aylık rapor tetiklendi ve sayılar sıfırlandı")
+            
+            return jsonify({
+                "success": True,
+                "message": "Aylık rapor başarıyla oluşturuldu ve sayılar sıfırlandı",
+                "report": report_data
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": "Rapor oluşturulamadı",
+                "error": report_data.get('error')
+            }), 500
 
-        return {'success': True, 'email_sent': count}
     except Exception as e:
-        return {'success': False, 'error': str(e)}
+        app.logger.error(f"❌ Rapor tetikleme hatası: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
-def schedule_monthly_report():
-    try:
-        scheduler.add_job(distribute_monthly_report, 'cron', day='last', hour=23, minute=0, id='monthly_report',
-                          replace_existing=True)
-        app.logger.info("✅ Aylık rapor zamanlayıcısı eklendi")
-    except Exception as e:
-        app.logger.error(f"❌ Zamanlayıcı hatası: {e}")
-
+# Zamanlayıcıyı güncelle (sadece günlük reset kalsın)
 scheduler.add_job(reset_daily_orders, 'cron', hour=0, minute=0)
-schedule_monthly_report()
 scheduler.start()
 
 # WebSocket
@@ -689,6 +809,68 @@ def restaurant_required(f):
         return f(*args, **kwargs)
     return wrapped
 
+# FCM Token Endpoint
+@app.route("/couriers/<int:courier_id>/fcm-token", methods=["POST"])
+@token_required
+def update_fcm_token(courier_id):
+    if request.user_role != "admin":
+        result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
+        if not result or result[0]["user_id"] != request.user_id:
+            return jsonify({"message": "Yetkisiz"}), 403
+
+    data = request.get_json() or {}
+    fcm_token = data.get("fcm_token")
+
+    if not fcm_token:
+        return jsonify({"message": "FCM token gerekli"}), 400
+
+    try:
+        if firebase_app:
+            app.logger.warning(f"⚠️ Token kaydediliyor (validation atlandı): {fcm_token[:15]}...")
+
+        success = execute_write_with_retry("UPDATE couriers SET fcm_token = ? WHERE id = ?", (fcm_token, courier_id))
+
+        if success:
+            msg = "Token kaydedildi (validation geçici olarak devre dışı)"
+            return jsonify({"message": msg})
+        else:
+            return jsonify({"message": "Token güncellenemedi"}), 500
+
+    except Exception as e:
+        app.logger.error(f"❌ Token update error: {e}")
+        return jsonify({"message": "Sunucu hatası", "error": str(e)}), 500
+
+@app.route("/admin/fcm/validate-all-tokens", methods=["POST"])
+@admin_required
+def validate_all_fcm_tokens():
+    try:
+        result = execute_with_retry("SELECT id, fcm_token FROM couriers WHERE fcm_token IS NOT NULL")
+        if not result:
+            return jsonify({"message": "Token bulunamadı"})
+
+        invalid_tokens = []
+        valid_count = 0
+
+        for row in result:
+            courier = row_to_dict(row)
+            token = courier.get('fcm_token')
+
+            if token and firebase_app and validate_fcm_token(token):
+                valid_count += 1
+            else:
+                invalid_tokens.append(token)
+                cleanup_invalid_fcm_token(token)
+
+        return jsonify({
+            "message": "Validasyon tamamlandı",
+            "valid_tokens": valid_count,
+            "invalid_tokens_cleaned": len(invalid_tokens)
+        })
+
+    except Exception as e:
+        app.logger.error(f"❌ Toplu validasyon hatası: {e}")
+        return jsonify({"message": "Validasyon hatası"}), 500
+
 # Neighborhood & Assignment
 def extract_neighborhood(address):
     if not address:
@@ -780,68 +962,6 @@ def assign_order_to_courier(order_id):
         return True
 
     return False
-
-# FCM Token Endpoint
-@app.route("/couriers/<int:courier_id>/fcm-token", methods=["POST"])
-@token_required
-def update_fcm_token(courier_id):
-    if request.user_role != "admin":
-        result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
-        if not result or result[0]["user_id"] != request.user_id:
-            return jsonify({"message": "Yetkisiz"}), 403
-
-    data = request.get_json() or {}
-    fcm_token = data.get("fcm_token")
-
-    if not fcm_token:
-        return jsonify({"message": "FCM token gerekli"}), 400
-
-    try:
-        if firebase_app:
-            app.logger.warning(f"⚠️ Token kaydediliyor (validation atlandı): {fcm_token[:15]}...")
-
-        success = execute_write_with_retry("UPDATE couriers SET fcm_token = ? WHERE id = ?", (fcm_token, courier_id))
-
-        if success:
-            msg = "Token kaydedildi (validation geçici olarak devre dışı)"
-            return jsonify({"message": msg})
-        else:
-            return jsonify({"message": "Token güncellenemedi"}), 500
-
-    except Exception as e:
-        app.logger.error(f"❌ Token update error: {e}")
-        return jsonify({"message": "Sunucu hatası", "error": str(e)}), 500
-
-@app.route("/admin/fcm/validate-all-tokens", methods=["POST"])
-@admin_required
-def validate_all_fcm_tokens():
-    try:
-        result = execute_with_retry("SELECT id, fcm_token FROM couriers WHERE fcm_token IS NOT NULL")
-        if not result:
-            return jsonify({"message": "Token bulunamadı"})
-
-        invalid_tokens = []
-        valid_count = 0
-
-        for row in result:
-            courier = row_to_dict(row)
-            token = courier.get('fcm_token')
-
-            if token and firebase_app and validate_fcm_token(token):
-                valid_count += 1
-            else:
-                invalid_tokens.append(token)
-                cleanup_invalid_fcm_token(token)
-
-        return jsonify({
-            "message": "Validasyon tamamlandı",
-            "valid_tokens": valid_count,
-            "invalid_tokens_cleaned": len(invalid_tokens)
-        })
-
-    except Exception as e:
-        app.logger.error(f"❌ Toplu validasyon hatası: {e}")
-        return jsonify({"message": "Validasyon hatası"}), 500
 
 # Auth Endpoints
 @app.route("/auth/register", methods=["POST"])
@@ -1287,15 +1407,6 @@ def manual_assign_orders():
     count = sum(1 for row in result if assign_order_to_courier(row_to_dict(row)["id"]))
     return jsonify({"message": f"{count} sipariş atandı"})
 
-@app.route("/admin/trigger-monthly-report", methods=["POST"])
-@admin_required
-def trigger_monthly_report():
-    result = distribute_monthly_report()
-    if result['success']:
-        return jsonify({"message": "Rapor gönderildi", "email_sent": result.get('email_sent', 0)})
-    else:
-        return jsonify({"message": "Rapor hatası", "error": result.get('error')}), 500
-
 @app.route("/admin/reports/orders", methods=["GET"])
 @admin_required
 def admin_reports_orders():
@@ -1720,5 +1831,6 @@ if __name__ == "__main__":
     app.logger.info("✅ Veritabanı hazır")
     app.logger.info("✅ WebSocket aktif")
     app.logger.info("✅ Zamanlayıcı aktif")
+    app.logger.info("✅ Yeni aylık rapor sistemi aktif")
 
     socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
