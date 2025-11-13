@@ -1,3 +1,4 @@
+# app.py - TAMAMEN GÜNCEL VE EKSİKSİZ VERSİYON
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit, join_room
 from datetime import datetime, timedelta
@@ -67,7 +68,7 @@ if FIREBASE_AVAILABLE:
             try:
                 with open(sa_path, 'r', encoding='utf-8') as f:
                     key_data = json.load(f)
-                
+
                 required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
                 missing = [f for f in required_fields if f not in key_data]
                 if missing:
@@ -75,11 +76,11 @@ if FIREBASE_AVAILABLE:
                 elif key_data.get('type') != 'service_account':
                     app.logger.error(f"❌ service account tipi beklenmiyor: {key_data.get('type')}")
                 else:
-                    pk = key_data.get('private_key','')
+                    pk = key_data.get('private_key', '')
                     if '\\n' in pk:
                         app.logger.warning("⚠️ private_key içinde kaçışlı '\\n' bulundu; düzeltiliyor.")
                         key_data['private_key'] = pk.replace('\\n', '\n')
-                    
+
                     if not key_data['private_key'].strip().startswith('-----BEGIN PRIVATE KEY-----'):
                         app.logger.error("❌ private_key PEM formatı beklenmiyor.")
                     else:
@@ -114,110 +115,6 @@ SMTP_PORT = 587
 EMAIL_USERNAME = "hediyecennetti@gmail.com"
 EMAIL_PASSWORD = "brvl ucry jgml qnsn"
 REPORT_RECIPIENTS = {"email": ["emrulllahtoprak009@gmail.com"]}
-
-# Decorators
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = None
-        if 'Authorization' in request.headers:
-            auth_header = request.headers['Authorization']
-            try:
-                token = auth_header.split(" ")[1]
-            except IndexError:
-                return jsonify({'message': 'Token formatı hatalı'}), 401
-        
-        if not token:
-            return jsonify({'message': 'Token gerekli'}), 401
-        
-        try:
-            data = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
-            request.user_id = data['user_id']
-            request.user_role = data['role']
-        except jwt.ExpiredSignatureError:
-            return jsonify({'message': 'Token süresi dolmuş'}), 401
-        except jwt.InvalidTokenError:
-            return jsonify({'message': 'Geçersiz token'}), 401
-        
-        return f(*args, **kwargs)
-    return decorated
-
-def admin_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = None
-        if 'Authorization' in request.headers:
-            auth_header = request.headers['Authorization']
-            try:
-                token = auth_header.split(" ")[1]
-            except IndexError:
-                return jsonify({'message': 'Token formatı hatalı'}), 401
-        
-        if not token:
-            return jsonify({'message': 'Token gerekli'}), 401
-        
-        try:
-            data = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
-            if data['role'] != 'admin':
-                return jsonify({'message': 'Admin yetkisi gerekli'}), 403
-            request.user_id = data['user_id']
-            request.user_role = data['role']
-        except jwt.ExpiredSignatureError:
-            return jsonify({'message': 'Token süresi dolmuş'}), 401
-        except jwt.InvalidTokenError:
-            return jsonify({'message': 'Geçersiz token'}), 401
-        
-        return f(*args, **kwargs)
-    return decorated
-
-def restaurant_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = None
-        if 'Authorization' in request.headers:
-            auth_header = request.headers['Authorization']
-            try:
-                token = auth_header.split(" ")[1]
-            except IndexError:
-                return jsonify({'message': 'Token formatı hatalı'}), 401
-        
-        if not token:
-            return jsonify({'message': 'Token gerekli'}), 401
-        
-        try:
-            data = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
-            if data['role'] != 'restaurant':
-                return jsonify({'message': 'Restoran yetkisi gerekli'}), 403
-            request.user_id = data['user_id']
-            request.user_role = data['role']
-        except jwt.ExpiredSignatureError:
-            return jsonify({'message': 'Token süresi dolmuş'}), 401
-        except jwt.InvalidTokenError:
-            return jsonify({'message': 'Geçersiz token'}), 401
-        
-        return f(*args, **kwargs)
-    return decorated
-
-# Auth Utilities
-def generate_token(user_id, role):
-    expiration = datetime.utcnow() + timedelta(hours=TOKEN_EXP_HOURS)
-    payload = {
-        'user_id': user_id,
-        'role': role,
-        'exp': expiration
-    }
-    return jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
-
-def decode_token(token):
-    return jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
-
-def hash_password(password):
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-
-def check_password(password, hashed):
-    if isinstance(hashed, str):
-        hashed = hashed.encode('utf-8')
-    return bcrypt.checkpw(password.encode('utf-8'), hashed)
 
 # FCM Fonksiyonları
 def validate_fcm_token(fcm_token):
@@ -342,20 +239,12 @@ def execute_write_with_retry(query, params=None, max_retries=5):
 
 # Total Amount Helper Function
 def parse_total_amount(amount):
-    """
-    Total amount değerini double'a çevirir
-    String gelirse temizler ve float'a çevirir
-    """
     if amount is None:
         return 0.0
-    
     try:
         if isinstance(amount, str):
-            # TL, ₺, virgül, boşluk gibi karakterleri temizle
             cleaned = re.sub(r'[^\d.,]', '', str(amount).strip())
-            # Virgülü noktaya çevir
             cleaned = cleaned.replace(',', '.')
-            # Birden fazla nokta varsa son noktayı kullan
             if cleaned.count('.') > 1:
                 parts = cleaned.split('.')
                 cleaned = '.'.join(parts[:-1]) + '.' + parts[-1]
@@ -364,103 +253,6 @@ def parse_total_amount(amount):
             return float(amount)
     except (ValueError, TypeError):
         return 0.0
-
-# Courier Assignment Logic
-def ensure_courier_performance(courier_id):
-    result = execute_with_retry("SELECT 1 FROM courier_performance WHERE courier_id = ?", (courier_id,))
-    if not result or len(result) == 0:
-        execute_write_with_retry(
-            "INSERT INTO courier_performance (courier_id, daily_orders, total_orders, last_assigned) VALUES (?, 0, 0, ?)",
-            (courier_id, datetime.utcnow().isoformat())
-        )
-
-def set_courier_cooldown(courier_id, neighborhood_id):
-    cooldown_until = (datetime.utcnow() + timedelta(minutes=30)).isoformat()
-    execute_write_with_retry(
-        "UPDATE courier_performance SET cooldown_until = ?, current_neighborhood_id = ? WHERE courier_id = ?",
-        (cooldown_until, neighborhood_id, courier_id)
-    )
-
-def get_available_couriers(neighborhood_id=None):
-    query = """
-        SELECT c.*, cp.daily_orders, cp.total_orders, cp.cooldown_until, cp.current_neighborhood_id
-        FROM couriers c
-        LEFT JOIN courier_performance cp ON c.id = cp.courier_id
-        WHERE c.status = 'boşta' 
-        AND (cp.cooldown_until IS NULL OR cp.cooldown_until < ?)
-    """
-    now = datetime.utcnow().isoformat()
-    params = [now]
-    
-    if neighborhood_id:
-        query += " AND (cp.current_neighborhood_id IS NULL OR cp.current_neighborhood_id = ?)"
-        params.append(neighborhood_id)
-    
-    query += " ORDER BY cp.daily_orders ASC, cp.total_orders ASC LIMIT 10"
-    
-    return execute_with_retry(query, params)
-
-def assign_order_to_courier(order_id):
-    try:
-        result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
-        if not result or len(result) == 0:
-            return False
-        
-        order = row_to_dict(result[0])
-        if order["courier_id"] is not None:
-            return True
-        
-        couriers = get_available_couriers(order.get("neighborhood_id"))
-        if not couriers or len(couriers) == 0:
-            couriers = get_available_couriers()
-        
-        if not couriers or len(couriers) == 0:
-            app.logger.warning(f"⚠️ Uygun kurye yok: Order {order_id}")
-            return False
-        
-        courier = row_to_dict(couriers[0])
-        courier_id = courier["id"]
-        
-        now = datetime.utcnow().isoformat()
-        
-        execute_write_with_retry(
-            "UPDATE orders SET courier_id = ?, status = 'teslim alındı', updated_at = ? WHERE id = ?",
-            (courier_id, now, order_id)
-        )
-        
-        execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
-        
-        ensure_courier_performance(courier_id)
-        execute_write_with_retry(
-            "UPDATE courier_performance SET daily_orders = daily_orders + 1, total_orders = total_orders + 1, last_assigned = ? WHERE courier_id = ?",
-            (now, courier_id)
-        )
-        
-        if order.get("neighborhood_id"):
-            set_courier_cooldown(courier_id, order["neighborhood_id"])
-        
-        execute_write_with_retry(
-            "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
-            (order_id, courier_id, 'assigned', 'Sistemsel atama', now)
-        )
-        
-        order_data = {
-            'order_id': order['id'],
-            'order_uuid': order['order_uuid'],
-            'customer_name': order['customer_name'],
-            'customer_phone': order.get('customer_phone', ''),
-            'address': order['address'],
-            'total_amount': order['total_amount'],
-            'items': order['items']
-        }
-        
-        notify_courier_new_order(courier_id, order_data)
-        app.logger.info(f"✅ Sipariş {order_id} -> Kurye {courier_id}")
-        return True
-        
-    except Exception as e:
-        app.logger.error(f"❌ Assignment error: {e}")
-        return False
 
 def init_db():
     conn = get_conn()
@@ -518,8 +310,7 @@ def init_db():
         phone TEXT,
         is_active INTEGER DEFAULT 1,
         created_at TEXT,
-        monthly_order_count INTEGER DEFAULT 0,
-        total_order_count INTEGER DEFAULT 0
+        monthly_order_count INTEGER DEFAULT 0
     )""")
 
     cur.execute("""CREATE TABLE IF NOT EXISTS delivery_history (
@@ -543,21 +334,12 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         courier_id INTEGER UNIQUE,
         daily_orders INTEGER DEFAULT 0,
-        monthly_orders INTEGER DEFAULT 0,
         total_orders INTEGER DEFAULT 0,
+        monthly_orders INTEGER DEFAULT 0,
         last_assigned TEXT,
         cooldown_until TEXT,
         current_neighborhood_id INTEGER,
         FOREIGN KEY (courier_id) REFERENCES couriers(id) ON DELETE CASCADE
-    )""")
-
-    cur.execute("""CREATE TABLE IF NOT EXISTS monthly_reports (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        report_month TEXT UNIQUE,
-        courier_stats TEXT,
-        restaurant_stats TEXT,
-        order_stats TEXT,
-        created_at TEXT
     )""")
 
     conn.commit()
@@ -571,7 +353,6 @@ def init_db():
         ('courier_performance', 'current_neighborhood_id', 'INTEGER'),
         ('orders', 'customer_phone', 'TEXT'),
         ('restaurants', 'monthly_order_count', 'INTEGER'),
-        ('restaurants', 'total_order_count', 'INTEGER'),
         ('courier_performance', 'monthly_orders', 'INTEGER')
     ]
 
@@ -582,13 +363,6 @@ def init_db():
                 conn.commit()
         except:
             pass
-
-    # Eğer monthly_orders yoksa ve daily_orders varsa, değerleri kopyala
-    try:
-        cur.execute("UPDATE courier_performance SET monthly_orders = daily_orders WHERE monthly_orders IS NULL")
-        conn.commit()
-    except:
-        pass
 
     conn.close()
 
@@ -605,25 +379,14 @@ def reset_daily_orders():
         app.logger.error(f"❌ Günlük sıfırlama hatası: {e}")
 
 def reset_monthly_counts():
-    """Aylık istatistikleri sıfırla ve rapor oluştur"""
     try:
-        # Önce mevcut aylık istatistikleri rapora kaydet
-        generate_monthly_report()
-        
-        # Sıfırlama işlemleri
         conn = get_conn()
         cur = conn.cursor()
-        
-        # Kurye aylık siparişleri sıfırla
         cur.execute("UPDATE courier_performance SET monthly_orders = 0")
-        
-        # Restoran aylık siparişleri sıfırla
         cur.execute("UPDATE restaurants SET monthly_order_count = 0")
-        
         conn.commit()
         conn.close()
-        
-        app.logger.info("✅ Aylık istatistikler sıfırlandı ve rapor oluşturuldu")
+        app.logger.info("✅ Aylık sipariş sayıları sıfırlandı")
     except Exception as e:
         app.logger.error(f"❌ Aylık sıfırlama hatası: {e}")
 
@@ -648,156 +411,140 @@ def send_email(to_email, subject, html_content):
         return False
 
 def generate_monthly_report():
-    """Aylık rapor verilerini oluştur ve kaydet"""
     try:
         today = datetime.utcnow()
         first_day = today.replace(day=1)
-        last_month = first_day - timedelta(days=1)
-        report_month = last_month.strftime("%Y-%m")
-        
-        start_date = last_month.replace(day=1)
-        end_date = first_day
-        
-        # Kurye istatistikleri
-        courier_stats = execute_with_retry("""
-            SELECT c.id, c.first_name, c.last_name, cp.monthly_orders, cp.total_orders
-            FROM couriers c
-            JOIN courier_performance cp ON c.id = cp.courier_id
+        last_day = first_day - timedelta(days=1)
+        first_prev = last_day.replace(day=1)
+
+        start = first_prev.strftime("%Y-%m-%d")
+        end = last_day.strftime("%Y-%m-%d")
+
+        # Sipariş durumları
+        result = execute_with_retry(
+            "SELECT status, COUNT(*) as cnt FROM orders WHERE created_at >= ? AND created_at < ? GROUP BY status",
+            (start, f"{end} 23:59:59")
+        )
+        status_counts = {row["status"]: row["cnt"] for row in result} if result else {}
+
+        # Kurye performansları
+        result = execute_with_retry("""
+            SELECT c.id, c.first_name, c.last_name, cp.monthly_orders 
+            FROM couriers c 
+            JOIN courier_performance cp ON c.id = cp.courier_id 
             WHERE cp.monthly_orders > 0
-            ORDER BY cp.monthly_orders DESC
         """)
-        
-        # Restoran istatistikleri
-        restaurant_stats = execute_with_retry("""
-            SELECT restaurant_id, name, monthly_order_count, total_order_count
+        courier_stats = [row_to_dict(row) for row in result] if result else []
+
+        # Restoran sipariş sayıları
+        result = execute_with_retry("""
+            SELECT restaurant_id, name, monthly_order_count 
             FROM restaurants 
             WHERE monthly_order_count > 0
-            ORDER BY monthly_order_count DESC
         """)
-        
-        # Sipariş istatistikleri
-        order_stats = execute_with_retry("""
-            SELECT status, COUNT(*) as count 
-            FROM orders 
-            WHERE created_at >= ? AND created_at < ?
-            GROUP BY status
-        """, (start_date.isoformat(), end_date.isoformat()))
-        
-        # Raporu veritabanına kaydet
-        report_data = {
-            'courier_stats': [row_to_dict(row) for row in courier_stats] if courier_stats else [],
-            'restaurant_stats': [row_to_dict(row) for row in restaurant_stats] if restaurant_stats else [],
-            'order_stats': {row['status']: row['count'] for row in order_stats} if order_stats else {},
-            'report_month': report_month,
-            'generated_at': datetime.utcnow().isoformat()
+        restaurant_stats = [row_to_dict(row) for row in result] if result else []
+
+        return {
+            'success': True,
+            'period': {'start': start, 'end': end},
+            'status_counts': status_counts,
+            'courier_stats': courier_stats,
+            'restaurant_stats': restaurant_stats
         }
-        
-        execute_write_with_retry("""
-            INSERT OR REPLACE INTO monthly_reports (report_month, courier_stats, restaurant_stats, order_stats, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (
-            report_month,
-            json.dumps(report_data['courier_stats'], ensure_ascii=False),
-            json.dumps(report_data['restaurant_stats'], ensure_ascii=False),
-            json.dumps(report_data['order_stats'], ensure_ascii=False),
-            report_data['generated_at']
-        ))
-        
-        return report_data
-        
     except Exception as e:
-        app.logger.error(f"❌ Rapor oluşturma hatası: {e}")
-        return None
+        app.logger.error(f"❌ Rapor hatası: {e}")
+        return {'success': False, 'error': str(e)}
 
 def format_report_for_email(report_data):
-    """Rapor verilerini email formatına dönüştür"""
-    if not report_data:
-        return "Rapor oluşturulamadı", "Hata"
-    
-    month = report_data.get('report_month', 'Bilinmeyen Ay')
-    subject = f"Aylık Teslimat Raporu - {month}"
-    
-    # Kurye istatistikleri tablosu
-    courier_table = ""
-    if report_data.get('courier_stats'):
-        courier_table = "<h3>Kurye Performansları</h3><table border='1' style='border-collapse: collapse; width: 100%;'><tr><th>Kurye</th><th>Aylık Teslimat</th><th>Toplam Teslimat</th></tr>"
-        for courier in report_data['courier_stats']:
-            courier_table += f"<tr><td>{courier.get('first_name', '')} {courier.get('last_name', '')}</td><td style='text-align: center;'>{courier.get('monthly_orders', 0)}</td><td style='text-align: center;'>{courier.get('total_orders', 0)}</td></tr>"
-        courier_table += "</table>"
-    
-    # Restoran istatistikleri tablosu
-    restaurant_table = ""
-    if report_data.get('restaurant_stats'):
-        restaurant_table = "<h3>Restoran Siparişleri</h3><table border='1' style='border-collapse: collapse; width: 100%;'><tr><th>Restoran</th><th>Aylık Sipariş</th><th>Toplam Sipariş</th></tr>"
-        for restaurant in report_data['restaurant_stats']:
-            restaurant_table += f"<tr><td>{restaurant.get('name', '')}</td><td style='text-align: center;'>{restaurant.get('monthly_order_count', 0)}</td><td style='text-align: center;'>{restaurant.get('total_order_count', 0)}</td></tr>"
-        restaurant_table += "</table>"
-    
+    if not report_data.get('success'):
+        return f"Rapor hatası: {report_data.get('error')}", "Hata"
+
+    period = report_data['period']
+    subject = f"Aylık Rapor - {period['start']} - {period['end']}"
+
     # Sipariş durumları
-    order_stats = ""
-    if report_data.get('order_stats'):
-        order_stats = "<h3>Sipariş Durumları</h3><table border='1' style='border-collapse: collapse; width: 100%;'><tr><th>Durum</th><th>Sayı</th></tr>"
-        for status, count in report_data['order_stats'].items():
-            order_stats += f"<tr><td>{status}</td><td style='text-align: center;'>{count}</td></tr>"
-        order_stats += "</table>"
-    
-    html = f"""
-    <html>
-        <body>
-            <h2>Aylık Teslimat Raporu - {month}</h2>
-            <p>Rapor oluşturulma tarihi: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</p>
-            {courier_table}
-            <br>
-            {restaurant_table}
-            <br>
-            {order_stats}
-            <br>
-            <p>Bu rapor otomatik olarak oluşturulmuştur.</p>
-        </body>
-    </html>
-    """
-    
+    status_html = ""
+    for status, count in report_data['status_counts'].items():
+        status_html += f"<tr><td>{status}</td><td>{count}</td></tr>"
+
+    # Kurye performansları
+    courier_html = ""
+    for courier in report_data.get('courier_stats', []):
+        courier_html += f"<tr><td>{courier.get('first_name', '')} {courier.get('last_name', '')}</td><td>{courier.get('monthly_orders', 0)}</td></tr>"
+
+    # Restoran istatistikleri
+    restaurant_html = ""
+    for restaurant in report_data.get('restaurant_stats', []):
+        restaurant_html += f"<tr><td>{restaurant.get('name', '')}</td><td>{restaurant.get('monthly_order_count', 0)}</td></tr>"
+
+    html = f"""<html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th {{ background-color: #f2f2f2; }}
+            .section {{ margin: 20px 0; }}
+        </style>
+    </head>
+    <body>
+        <h1>Aylık Teslimat Raporu</h1>
+        <p>Dönem: {period['start']} - {period['end']}</p>
+        <p>Oluşturulma: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</p>
+        
+        <div class="section">
+            <h2>Sipariş Durumları</h2>
+            <table>
+                <tr><th>Durum</th><th>Sayı</th></tr>
+                {status_html}
+            </table>
+        </div>
+
+        <div class="section">
+            <h2>Kurye Performansları</h2>
+            <table>
+                <tr><th>Kurye</th><th>Aylık Teslimat</th></tr>
+                {courier_html}
+            </table>
+        </div>
+
+        <div class="section">
+            <h2>Restoran Siparişleri</h2>
+            <table>
+                <tr><th>Restoran</th><th>Aylık Sipariş</th></tr>
+                {restaurant_html}
+            </table>
+        </div>
+    </body>
+    </html>"""
+
     return html, subject
 
 def distribute_monthly_report():
-    """Aylık raporu oluştur ve email olarak gönder"""
     try:
         report_data = generate_monthly_report()
-        if not report_data:
-            return {'success': False, 'error': 'Rapor oluşturulamadı'}
-        
         html, subject = format_report_for_email(report_data)
-        
+
         count = 0
         for email in REPORT_RECIPIENTS.get('email', []):
             if send_email(email, subject, html):
                 count += 1
-        
-        # İstatistikleri sıfırla
-        reset_monthly_counts()
-        
-        return {'success': True, 'email_sent': count, 'report_month': report_data.get('report_month')}
+
+        if count > 0:
+            reset_monthly_counts()
+
+        return {'success': True, 'email_sent': count}
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
 def schedule_monthly_report():
-    """Aylık rapor için zamanlayıcı kur"""
     try:
-        # Her ayın 1'inde saat 00:05'te çalıştır
-        scheduler.add_job(
-            distribute_monthly_report, 
-            'cron', 
-            day=1, 
-            hour=0, 
-            minute=5,
-            id='monthly_report',
-            replace_existing=True
-        )
+        scheduler.add_job(distribute_monthly_report, 'cron', day='last', hour=23, minute=0, id='monthly_report',
+                          replace_existing=True)
         app.logger.info("✅ Aylık rapor zamanlayıcısı eklendi")
     except Exception as e:
         app.logger.error(f"❌ Zamanlayıcı hatası: {e}")
 
-# Zamanlayıcıları başlat
 scheduler.add_job(reset_daily_orders, 'cron', hour=0, minute=0)
 schedule_monthly_report()
 scheduler.start()
@@ -867,6 +614,173 @@ def notify_courier_reassignment(courier_id, order_id, action):
         app.logger.error(f"❌ Reassign notify error: {e}")
         return False
 
+# Password & JWT
+def hash_password(password):
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+
+def _normalize_hash(h):
+    if isinstance(h, memoryview):
+        return bytes(h)
+    if isinstance(h, str):
+        return h.encode("utf-8")
+    return h
+
+def check_password(password, hashed):
+    if not hashed:
+        return False
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), _normalize_hash(hashed))
+    except:
+        return False
+
+def generate_token(user_id, role):
+    payload = {"user_id": user_id, "role": role, "exp": datetime.utcnow() + timedelta(hours=TOKEN_EXP_HOURS)}
+    token = jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return token.decode("utf-8") if isinstance(token, bytes) else token
+
+def decode_token(token):
+    return jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
+
+# Decorators
+def token_required(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        auth = request.headers.get("Authorization", "")
+        token = None
+        if auth.startswith("Bearer "):
+            token = auth.split(" ", 1)[1].strip()
+        if not token:
+            return jsonify({"message": "Token gerekli"}), 401
+        try:
+            data = decode_token(token)
+            request.user_id = data.get("user_id")
+            request.user_role = data.get("role")
+        except jwt.ExpiredSignatureError:
+            return jsonify({"message": "Token süresi dolmuş"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"message": "Geçersiz token"}), 401
+        return f(*args, **kwargs)
+    return wrapped
+
+def admin_required(f):
+    @wraps(f)
+    @token_required
+    def wrapped(*args, **kwargs):
+        if getattr(request, "user_role", None) != "admin":
+            return jsonify({"message": "Admin yetkisi gerekli"}), 403
+        return f(*args, **kwargs)
+    return wrapped
+
+def courier_required(f):
+    @wraps(f)
+    @token_required
+    def wrapped(*args, **kwargs):
+        if getattr(request, "user_role", None) != "courier":
+            return jsonify({"message": "Kurye yetkisi gerekli"}), 403
+        return f(*args, **kwargs)
+    return wrapped
+
+def restaurant_required(f):
+    @wraps(f)
+    @token_required
+    def wrapped(*args, **kwargs):
+        if getattr(request, "user_role", None) != "restaurant":
+            return jsonify({"message": "Restoran yetkisi gerekli"}), 403
+        return f(*args, **kwargs)
+    return wrapped
+
+# Neighborhood & Assignment
+def extract_neighborhood(address):
+    if not address:
+        return None
+    patterns = [
+        r'(\w+)\s*mah\.',
+        r'(\w+)\s*mahallesi',
+        r'(\w+)\s*mahalle'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, address.lower())
+        if match:
+            return match.group(1).strip().title()
+    return None
+
+def get_or_create_neighborhood(name):
+    if not name:
+        return None
+    result = execute_with_retry("SELECT id FROM neighborhoods WHERE name = ?", (name,))
+    if result and len(result) > 0:
+        return result[0]["id"]
+    execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)",
+                             (name, datetime.utcnow().isoformat()))
+    result = execute_with_retry("SELECT id FROM neighborhoods WHERE name = ?", (name,))
+    return result[0]["id"] if result and len(result) > 0 else None
+
+def ensure_courier_performance(courier_id):
+    result = execute_with_retry("SELECT 1 FROM courier_performance WHERE courier_id = ?", (courier_id,))
+    if not result or len(result) == 0:
+        execute_write_with_retry("INSERT INTO courier_performance (courier_id, last_assigned) VALUES (?, ?)",
+                                 (courier_id, datetime.utcnow().isoformat()))
+
+def set_courier_cooldown(courier_id, neighborhood_id):
+    cooldown = (datetime.utcnow() + timedelta(minutes=3)).isoformat()
+    execute_write_with_retry(
+        "UPDATE courier_performance SET cooldown_until = ?, current_neighborhood_id = ? WHERE courier_id = ?",
+        (cooldown, neighborhood_id, courier_id))
+
+def assign_order_to_courier(order_id):
+    result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
+    if not result or len(result) == 0:
+        return False
+
+    order = row_to_dict(result[0])
+    neighborhood_id = None
+    neighborhood_name = extract_neighborhood(order["address"])
+
+    if neighborhood_name:
+        neighborhood_id = get_or_create_neighborhood(neighborhood_name)
+        execute_write_with_retry("UPDATE orders SET neighborhood_id = ? WHERE id = ?", (neighborhood_id, order_id))
+
+    result = execute_with_retry("""
+        SELECT c.id, COALESCE(cp.daily_orders, 0) as daily_orders
+        FROM couriers c
+        LEFT JOIN courier_performance cp ON c.id = cp.courier_id
+        WHERE c.status IN ('boşta', 'teslimatta')
+        ORDER BY daily_orders ASC, c.id ASC
+        LIMIT 1
+    """)
+
+    if result and len(result) > 0:
+        courier = row_to_dict(result[0])
+        courier_id = courier["id"]
+
+        execute_write_with_retry("UPDATE orders SET courier_id = ? WHERE id = ?", (courier_id, order_id))
+        execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
+
+        ensure_courier_performance(courier_id)
+        execute_write_with_retry(
+            "UPDATE courier_performance SET daily_orders = daily_orders + 1, total_orders = total_orders + 1, monthly_orders = monthly_orders + 1 WHERE courier_id = ?",
+            (courier_id,))
+
+        if neighborhood_id:
+            set_courier_cooldown(courier_id, neighborhood_id)
+
+        order_result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
+        if order_result and len(order_result) > 0:
+            order = row_to_dict(order_result[0])
+            notify_courier_new_order(courier_id, {
+                'order_id': order['id'],
+                'order_uuid': order['order_uuid'],
+                'customer_name': order['customer_name'],
+                'customer_phone': order.get('customer_phone', ''),
+                'address': order['address'],
+                'total_amount': order['total_amount'],
+                'items': order['items']
+            })
+
+        return True
+
+    return False
+
 # FCM Token Endpoint
 @app.route("/couriers/<int:courier_id>/fcm-token", methods=["POST"])
 @token_required
@@ -883,11 +797,9 @@ def update_fcm_token(courier_id):
         return jsonify({"message": "FCM token gerekli"}), 400
 
     try:
-        # GEÇİCİ FIX: Validation'ı atla, sadece kaydet
         if firebase_app:
             app.logger.warning(f"⚠️ Token kaydediliyor (validation atlandı): {fcm_token[:15]}...")
 
-        # Token'ı kaydet
         success = execute_write_with_retry("UPDATE couriers SET fcm_token = ? WHERE id = ?", (fcm_token, courier_id))
 
         if success:
@@ -983,19 +895,17 @@ def auth_register():
         if not phone:
             return jsonify({"message": "phone gerekli"}), 400
 
-    # ÖNEMLİ DÜZELTME: Silinmiş kullanıcıları kontrol et
     existing = execute_with_retry("SELECT id FROM users WHERE username = ?", (username,))
     if existing and len(existing) > 0:
         return jsonify({"message": "Kullanıcı adı kullanılıyor"}), 400
 
-    # ÖNEMLİ DÜZELTME: Email ve phone kontrolü - sadece aktif kullanıcılar için
     if role == "courier":
         email = data.get("email")
         if email:
             existing_email = execute_with_retry("SELECT 1 FROM couriers WHERE email = ?", (email,))
             if existing_email and len(existing_email) > 0:
                 return jsonify({"message": "Email adresi kullanılıyor"}), 400
-        
+
         existing_phone = execute_with_retry("SELECT 1 FROM couriers WHERE phone = ?", (phone,))
         if existing_phone and len(existing_phone) > 0:
             return jsonify({"message": "Telefon numarası kullanılıyor"}), 400
@@ -1031,7 +941,6 @@ def auth_register():
                 courier_obj = row_to_dict(result[0])
 
     except sqlite3.IntegrityError as e:
-        # ÖNEMLİ DÜZELTME: Hata durumunda oluşan kullanıcıyı temizle
         execute_write_with_retry("DELETE FROM users WHERE username = ?", (username,))
         return jsonify({"message": "Kullanıcı adı, email veya telefon zaten var", "error": str(e)}), 400
 
@@ -1106,104 +1015,7 @@ def me():
 
     return jsonify(user)
 
-# Yeni Raporlama Endpoint'leri
-@app.route("/admin/reports/monthly", methods=["GET"])
-@admin_required
-def get_monthly_reports():
-    """Kayıtlı aylık raporları getir"""
-    try:
-        result = execute_with_retry(
-            "SELECT report_month, courier_stats, restaurant_stats, order_stats, created_at FROM monthly_reports ORDER BY created_at DESC"
-        )
-        
-        reports = []
-        for row in result:
-            report = row_to_dict(row)
-            # JSON string'lerini dict'e çevir
-            report['courier_stats'] = json.loads(report['courier_stats']) if report['courier_stats'] else []
-            report['restaurant_stats'] = json.loads(report['restaurant_stats']) if report['restaurant_stats'] else []
-            report['order_stats'] = json.loads(report['order_stats']) if report['order_stats'] else {}
-            reports.append(report)
-            
-        return jsonify(reports)
-    except Exception as e:
-        app.logger.error(f"❌ Rapor getirme hatası: {e}")
-        return jsonify({"message": "Raporlar getirilemedi", "error": str(e)}), 500
-
-@app.route("/admin/reports/current-stats", methods=["GET"])
-@admin_required
-def get_current_stats():
-    """Mevcut ayın istatistiklerini getir"""
-    try:
-        # Kurye istatistikleri
-        courier_stats = execute_with_retry("""
-            SELECT c.id, c.first_name, c.last_name, cp.monthly_orders, cp.total_orders, cp.daily_orders
-            FROM couriers c
-            JOIN courier_performance cp ON c.id = cp.courier_id
-            ORDER BY cp.monthly_orders DESC
-        """)
-        
-        # Restoran istatistikleri
-        restaurant_stats = execute_with_retry("""
-            SELECT restaurant_id, name, monthly_order_count, total_order_count
-            FROM restaurants 
-            ORDER BY monthly_order_count DESC
-        """)
-        
-        # Mevcut ayın sipariş istatistikleri
-        current_month = datetime.utcnow().strftime("%Y-%m")
-        first_day = datetime.utcnow().replace(day=1)
-        next_month = (first_day + timedelta(days=32)).replace(day=1)
-        
-        order_stats = execute_with_retry("""
-            SELECT status, COUNT(*) as count 
-            FROM orders 
-            WHERE created_at >= ? AND created_at < ?
-            GROUP BY status
-        """, (first_day.isoformat(), next_month.isoformat()))
-        
-        return jsonify({
-            'courier_stats': [row_to_dict(row) for row in courier_stats] if courier_stats else [],
-            'restaurant_stats': [row_to_dict(row) for row in restaurant_stats] if restaurant_stats else [],
-            'order_stats': {row['status']: row['count'] for row in order_stats} if order_stats else {},
-            'current_month': current_month
-        })
-        
-    except Exception as e:
-        app.logger.error(f"❌ İstatistik getirme hatası: {e}")
-        return jsonify({"message": "İstatistikler getirilemedi", "error": str(e)}), 500
-
-@app.route("/admin/reports/generate-test", methods=["POST"])
-@admin_required
-def generate_test_report():
-    """Test amaçlı rapor oluştur"""
-    try:
-        report_data = generate_monthly_report()
-        if report_data:
-            return jsonify({
-                "message": "Test raporu oluşturuldu",
-                "report": report_data
-            })
-        else:
-            return jsonify({"message": "Rapor oluşturulamadı"}), 500
-    except Exception as e:
-        return jsonify({"message": "Test raporu hatası", "error": str(e)}), 500
-
-# Restoran sipariş sayacı güncelleme
-def update_restaurant_order_count(vendor_id):
-    """Restoranın sipariş sayacını güncelle"""
-    try:
-        if vendor_id:
-            execute_write_with_retry("""
-                UPDATE restaurants 
-                SET monthly_order_count = monthly_order_count + 1, 
-                    total_order_count = total_order_count + 1 
-                WHERE restaurant_id = ?
-            """, (vendor_id,))
-    except Exception as e:
-        app.logger.error(f"❌ Restoran sayac güncelleme hatası: {e}")
-
-# Admin Endpoints (mevcut endpoint'ler aynı kalacak, sadece gerekli güncellemeler yapıldı)
+# Admin Endpoints
 @app.route("/admin/couriers", methods=["POST"])
 @admin_required
 def admin_create_courier():
@@ -1218,7 +1030,6 @@ def admin_create_courier():
     if result and len(result) > 0:
         return jsonify({"message": "Kullanıcı adı kullanılıyor"}), 400
 
-    # ÖNEMLİ DÜZELTME: Telefon kontrolü
     existing_phone = execute_with_retry("SELECT 1 FROM couriers WHERE phone = ?", (phone,))
     if existing_phone and len(existing_phone) > 0:
         return jsonify({"message": "Telefon numarası kullanılıyor"}), 400
@@ -1249,11 +1060,416 @@ def admin_create_courier():
         }), 201
 
     except sqlite3.IntegrityError as e:
-        # Hata durumunda temizlik
         execute_write_with_retry("DELETE FROM users WHERE username = ?", (username,))
         return jsonify({"message": "IntegrityError", "error": str(e)}), 400
 
-# Order webhook endpoint'inde restoran sayacı güncelleme
+@app.route("/admin/orders/<int:order_id>/reassign", methods=["POST"])
+@admin_required
+def admin_reassign_order(order_id):
+    data = request.get_json() or {}
+    new_courier_id = data.get("new_courier_id")
+
+    if not new_courier_id:
+        return jsonify({"message": "new_courier_id gerekli"}), 400
+
+    result = execute_with_retry(
+        "SELECT o.*, c.id as current_courier_id FROM orders o LEFT JOIN couriers c ON o.courier_id = c.id WHERE o.id = ?",
+        (order_id,))
+    if not result or len(result) == 0:
+        return jsonify({"message": "Sipariş bulunamadı"}), 404
+
+    order = row_to_dict(result[0])
+    current_courier_id = order["current_courier_id"]
+
+    result = execute_with_retry(
+        "SELECT id, first_name, last_name FROM couriers WHERE id = ? AND status IN ('boşta', 'teslimatta')",
+        (new_courier_id,))
+    if not result or len(result) == 0:
+        return jsonify({"message": "Yeni kurye bulunamadı"}), 404
+
+    new_courier = row_to_dict(result[0])
+
+    if order["status"] not in ["yeni", "teslim alındı"]:
+        return jsonify({"message": "Sadece yeni/teslim alındı siparişler yeniden atanabilir"}), 400
+
+    if current_courier_id == new_courier_id:
+        return jsonify({"message": "Sipariş zaten bu kuryede"}), 400
+
+    now = datetime.utcnow().isoformat()
+
+    try:
+        if current_courier_id:
+            result = execute_with_retry(
+                "SELECT COUNT(*) as cnt FROM orders WHERE courier_id = ? AND status IN ('yeni', 'teslim alındı') AND id != ?",
+                (current_courier_id, order_id))
+            if result and result[0]["cnt"] == 0:
+                execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (current_courier_id,))
+            execute_write_with_retry(
+                "UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?",
+                (current_courier_id,))
+            notify_courier_reassignment(current_courier_id, order_id, "removed")
+
+        execute_write_with_retry(
+            "UPDATE orders SET courier_id = ?, status = 'teslim alındı', updated_at = ? WHERE id = ?",
+            (new_courier_id, now, order_id))
+        execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (new_courier_id,))
+        ensure_courier_performance(new_courier_id)
+
+        if order.get("neighborhood_id"):
+            set_courier_cooldown(new_courier_id, order["neighborhood_id"])
+
+        execute_write_with_retry(
+            "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+            (order_id, new_courier_id, 'reassigned', f'Yeniden atandı', now))
+
+        result = execute_with_retry("SELECT * FROM orders WHERE id = ?", (order_id,))
+        if result and len(result) > 0:
+            order_data = row_to_dict(result[0])
+            notify_courier_new_order(new_courier_id, {
+                'order_id': order_data['id'],
+                'order_uuid': order_data['order_uuid'],
+                'customer_name': order_data['customer_name'],
+                'customer_phone': order_data.get('customer_phone', ''),
+                'address': order_data['address'],
+                'total_amount': order_data['total_amount'],
+                'items': order_data['items'],
+                'reassigned': True
+            })
+
+        return jsonify({
+            "message": f"Sipariş {new_courier['first_name']} {new_courier['last_name']} kuryesine atandı",
+            "new_courier_id": new_courier_id
+        })
+
+    except Exception as e:
+        app.logger.error(f"❌ Reassign error: {e}")
+        return jsonify({"message": "Hata oluştu", "error": str(e)}), 500
+
+@app.route("/users", methods=["GET"])
+@admin_required
+def list_users():
+    result = execute_with_retry("SELECT id, username, role, created_at, restaurant_id FROM users")
+    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
+@app.route("/users/<int:user_id>", methods=["DELETE"])
+@admin_required
+def delete_user(user_id):
+    try:
+        user_result = execute_with_retry("SELECT role, restaurant_id FROM users WHERE id = ?", (user_id,))
+        if not user_result or len(user_result) == 0:
+            return jsonify({"message": "Kullanıcı bulunamadı"}), 404
+
+        user = row_to_dict(user_result[0])
+        user_role = user["role"]
+        restaurant_id = user.get("restaurant_id")
+
+        app.logger.info(f"🗑️ Kullanıcı siliniyor: ID={user_id}, Role={user_role}, RestaurantID={restaurant_id}")
+
+        if user_role == "courier":
+            courier_result = execute_with_retry("SELECT id FROM couriers WHERE user_id = ?", (user_id,))
+            if courier_result and len(courier_result) > 0:
+                courier_id = courier_result[0]["id"]
+
+                execute_write_with_retry("UPDATE delivery_history SET courier_id = NULL WHERE courier_id = ?",
+                                         (courier_id,))
+                execute_write_with_retry("UPDATE orders SET courier_id = NULL WHERE courier_id = ?", (courier_id,))
+                execute_write_with_retry("DELETE FROM courier_performance WHERE courier_id = ?", (courier_id,))
+                execute_write_with_retry("DELETE FROM couriers WHERE user_id = ?", (user_id,))
+
+            execute_write_with_retry("DELETE FROM users WHERE id = ?", (user_id,))
+
+        elif user_role == "restaurant":
+            other_users = execute_with_retry(
+                "SELECT id FROM users WHERE restaurant_id = ? AND id != ?",
+                (restaurant_id, user_id)
+            )
+
+            if not other_users or len(other_users) == 0:
+                execute_write_with_retry("DELETE FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
+
+            execute_write_with_retry("DELETE FROM users WHERE id = ?", (user_id,))
+
+        else:
+            execute_write_with_retry("DELETE FROM users WHERE id = ?", (user_id,))
+
+        app.logger.info(f"✅ Kullanıcı başarıyla silindi: {user_id}")
+        return jsonify({"message": "Kullanıcı silindi"})
+
+    except Exception as e:
+        app.logger.error(f"❌ Kullanıcı silme hatası: {e}")
+        return jsonify({"message": "Kullanıcı silinirken hata oluştu", "error": str(e)}), 500
+
+@app.route("/users/<int:user_id>", methods=["PATCH"])
+@admin_required
+def update_user(user_id):
+    data = request.get_json() or {}
+    fields, values = [], []
+    if "role" in data:
+        if data["role"] not in ("admin", "courier", "restaurant"):
+            return jsonify({"message": "Geçersiz role"}), 400
+        fields.append("role = ?")
+        values.append(data["role"])
+    if "password" in data:
+        fields.append("password_hash = ?")
+        values.append(hash_password(data["password"]))
+    if "restaurant_id" in data:
+        fields.append("restaurant_id = ?")
+        values.append(data["restaurant_id"])
+    if not fields:
+        return jsonify({"message": "Güncellenecek alan yok"}), 400
+
+    values.append(user_id)
+    execute_write_with_retry(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", values)
+    return jsonify({"message": "Kullanıcı güncellendi"})
+
+@app.route("/couriers", methods=["GET"])
+@admin_required
+def admin_list_couriers():
+    result = execute_with_retry(
+        "SELECT id, user_id, first_name, last_name, email, phone, status, created_at, fcm_token FROM couriers")
+    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
+@app.route("/couriers/<int:courier_id>", methods=["PATCH"])
+@admin_required
+def admin_update_courier(courier_id):
+    data = request.get_json() or {}
+    allowed = ("first_name", "last_name", "email", "phone", "status", "fcm_token")
+    fields, values = [], []
+    for k in allowed:
+        if k in data:
+            fields.append(f"{k} = ?")
+            values.append(data[k])
+    if not fields:
+        return jsonify({"message": "Güncellenecek alan yok"}), 400
+
+    values.append(courier_id)
+    try:
+        execute_write_with_retry(f"UPDATE couriers SET {', '.join(fields)} WHERE id = ?", values)
+        return jsonify({"message": "Kurye güncellendi"})
+    except sqlite3.IntegrityError as e:
+        return jsonify({"message": "Integrity error", "error": str(e)}), 400
+
+@app.route("/couriers/<int:courier_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_courier(courier_id):
+    try:
+        execute_write_with_retry("UPDATE delivery_history SET courier_id = NULL WHERE courier_id = ?", (courier_id,))
+        execute_write_with_retry("UPDATE orders SET courier_id = NULL WHERE courier_id = ?", (courier_id,))
+        execute_write_with_retry("DELETE FROM courier_performance WHERE courier_id = ?", (courier_id,))
+
+        result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
+        if result and len(result) > 0:
+            user_id = result[0]["user_id"]
+            execute_write_with_retry("DELETE FROM couriers WHERE id = ?", (courier_id,))
+            execute_write_with_retry("DELETE FROM users WHERE id = ?", (user_id,))
+        else:
+            execute_write_with_retry("DELETE FROM couriers WHERE id = ?", (courier_id,))
+
+        return jsonify({"message": "Kurye silindi"})
+    except Exception as e:
+        app.logger.error(f"❌ Kurye silme hatası: {e}")
+        return jsonify({"message": "Kurye silinirken hata oluştu"}), 500
+
+@app.route("/couriers/<int:courier_id>/reset-performance", methods=["POST"])
+@admin_required
+def reset_courier_performance(courier_id):
+    execute_write_with_retry("UPDATE courier_performance SET daily_orders = 0, total_orders = 0, monthly_orders = 0 WHERE courier_id = ?",
+                             (courier_id,))
+    return jsonify({"message": "Performans sıfırlandı"})
+
+@app.route("/admin/assign-orders", methods=["POST"])
+@admin_required
+def manual_assign_orders():
+    result = execute_with_retry("SELECT id FROM orders WHERE courier_id IS NULL AND status = 'yeni'")
+    if not result:
+        return jsonify({"message": "Atanmamış sipariş yok"})
+
+    count = sum(1 for row in result if assign_order_to_courier(row_to_dict(row)["id"]))
+    return jsonify({"message": f"{count} sipariş atandı"})
+
+@app.route("/admin/trigger-monthly-report", methods=["POST"])
+@admin_required
+def trigger_monthly_report():
+    result = distribute_monthly_report()
+    if result['success']:
+        return jsonify({"message": "Rapor gönderildi", "email_sent": result.get('email_sent', 0)})
+    else:
+        return jsonify({"message": "Rapor hatası", "error": result.get('error')}), 500
+
+@app.route("/admin/reports/orders", methods=["GET"])
+@admin_required
+def admin_reports_orders():
+    start = request.args.get("start_date")
+    end = request.args.get("end_date")
+    if not start or not end:
+        return jsonify({"message": "start_date ve end_date gerekli (YYYY-MM-DD)"}), 400
+
+    try:
+        start_dt = datetime.strptime(start, "%Y-%m-%d")
+        end_dt = datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)
+    except:
+        return jsonify({"message": "Tarih formatı YYYY-MM-DD"}), 400
+
+    result = execute_with_retry(
+        "SELECT status, COUNT(*) as cnt FROM orders WHERE created_at >= ? AND created_at < ? GROUP BY status",
+        (start_dt.isoformat(), end_dt.isoformat()))
+    status_counts = {row["status"]: row["cnt"] for row in result} if result else {}
+
+    return jsonify({"status_counts": status_counts, "period": {"start": start, "end": end}})
+
+# Courier Endpoints
+@app.route("/couriers/<int:courier_id>/status", methods=["PATCH"])
+@token_required
+def courier_update_status(courier_id):
+    if request.user_role != "admin":
+        result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
+        if not result or row_to_dict(result[0])["user_id"] != request.user_id:
+            return jsonify({"message": "Yetkisiz"}), 403
+
+    data = request.get_json() or {}
+    status = data.get("status")
+    if status not in ("boşta", "molada", "teslimatta"):
+        return jsonify({"message": "Geçersiz status"}), 400
+
+    execute_write_with_retry("UPDATE couriers SET status = ? WHERE id = ?", (status, courier_id))
+    return jsonify({"message": "Durum güncellendi", "status": status})
+
+@app.route("/couriers/<int:courier_id>/orders", methods=["GET"])
+@token_required
+def courier_get_orders(courier_id):
+    if request.user_role != "admin":
+        result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
+        if not result or row_to_dict(result[0])["user_id"] != request.user_id:
+            return jsonify({"message": "Yetkisiz"}), 403
+
+    result = execute_with_retry("SELECT * FROM orders WHERE courier_id = ? AND status IN ('yeni','teslim alındı')",
+                                (courier_id,))
+    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
+@app.route("/couriers/<int:courier_id>/orders/<int:order_id>/pickup", methods=["POST"])
+@token_required
+def courier_pickup_order(courier_id, order_id):
+    if request.user_role != "admin":
+        result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
+        if not result or row_to_dict(result[0])["user_id"] != request.user_id:
+            return jsonify({"message": "Yetkisiz"}), 403
+
+    result = execute_with_retry("SELECT * FROM orders WHERE id = ? AND courier_id = ?", (order_id, courier_id))
+    if not result or len(result) == 0:
+        return jsonify({"message": "Sipariş bulunamadı"}), 404
+
+    order = row_to_dict(result[0])
+    if order["status"] != "yeni":
+        return jsonify({"message": "Sipariş zaten alınmış"}), 400
+
+    now = datetime.utcnow().isoformat()
+    execute_write_with_retry("UPDATE orders SET status = 'teslim alındı', updated_at = ? WHERE id = ?", (now, order_id))
+    execute_write_with_retry("UPDATE couriers SET status = 'teslimatta' WHERE id = ?", (courier_id,))
+    execute_write_with_retry(
+        "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+        (order_id, courier_id, 'teslim alındı', 'Teslim alındı', now))
+
+    return jsonify({"message": "Sipariş teslim alındı"})
+
+@app.route("/couriers/<int:courier_id>/orders/<int:order_id>/deliver", methods=["POST"])
+@token_required
+def courier_deliver_order(courier_id, order_id):
+    if request.user_role != "admin":
+        result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
+        if not result or row_to_dict(result[0])["user_id"] != request.user_id:
+            return jsonify({"message": "Yetkisiz"}), 403
+
+    result = execute_with_retry("SELECT * FROM orders WHERE id = ? AND courier_id = ?", (order_id, courier_id))
+    if not result or len(result) == 0:
+        return jsonify({"message": "Sipariş bulunamadı"}), 404
+
+    order = row_to_dict(result[0])
+    if order["status"] != "teslim alındı":
+        return jsonify({"message": "Sipariş teslim alınmamış"}), 400
+
+    now = datetime.utcnow().isoformat()
+    execute_write_with_retry("UPDATE orders SET status = 'teslim edildi', updated_at = ? WHERE id = ?", (now, order_id))
+    execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
+    execute_write_with_retry(
+        "UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?",
+        (courier_id,))
+    execute_write_with_retry(
+        "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+        (order_id, courier_id, 'teslim edildi', 'Teslim edildi', now))
+
+    return jsonify({"message": "Sipariş teslim edildi"})
+
+@app.route("/couriers/<int:courier_id>/orders/<int:order_id>/fail", methods=["POST"])
+@token_required
+def courier_fail_order(courier_id, order_id):
+    if request.user_role != "admin":
+        result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
+        if not result or row_to_dict(result[0])["user_id"] != request.user_id:
+            return jsonify({"message": "Yetkisiz"}), 403
+
+    data = request.get_json() or {}
+    reason = data.get("reason", "")
+    if not reason:
+        return jsonify({"message": "Neden gerekli"}), 400
+
+    result = execute_with_retry("SELECT * FROM orders WHERE id = ? AND courier_id = ?", (order_id, courier_id))
+    if not result or len(result) == 0:
+        return jsonify({"message": "Sipariş bulunamadı"}), 404
+
+    now = datetime.utcnow().isoformat()
+    execute_write_with_retry(
+        "UPDATE orders SET status = 'teslim edilemedi', delivery_failed_reason = ?, updated_at = ? WHERE id = ?",
+        (reason, now, order_id))
+    execute_write_with_retry("UPDATE couriers SET status = 'boşta' WHERE id = ?", (courier_id,))
+    execute_write_with_retry(
+        "UPDATE courier_performance SET cooldown_until = NULL, current_neighborhood_id = NULL WHERE courier_id = ?",
+        (courier_id,))
+    execute_write_with_retry(
+        "INSERT INTO delivery_history (order_id, courier_id, status, notes, created_at) VALUES (?, ?, ?, ?, ?)",
+        (order_id, courier_id, 'teslim edilemedi', f'Başarısız: {reason}', now))
+
+    return jsonify({"message": "Başarısız işaretlendi"})
+
+@app.route("/couriers/<int:courier_id>/delivery-history", methods=["GET"])
+@token_required
+def courier_delivery_history(courier_id):
+    if request.user_role != "admin":
+        result = execute_with_retry("SELECT user_id FROM couriers WHERE id = ?", (courier_id,))
+        if not result or row_to_dict(result[0])["user_id"] != request.user_id:
+            return jsonify({"message": "Yetkisiz"}), 403
+
+    result = execute_with_retry(
+        "SELECT dh.*, o.customer_name, o.address FROM delivery_history dh JOIN orders o ON dh.order_id = o.id WHERE dh.courier_id = ? ORDER BY dh.created_at DESC",
+        (courier_id,))
+    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
+# Restaurant Endpoints
+@app.route("/restaurants/orders", methods=["GET"])
+@restaurant_required
+def restaurant_get_orders():
+    result = execute_with_retry("SELECT restaurant_id FROM users WHERE id = ?", (request.user_id,))
+    if not result or len(result) == 0:
+        return jsonify({"message": "Restaurant ID yok"}), 404
+
+    rid = row_to_dict(result[0])["restaurant_id"]
+    result = execute_with_retry("SELECT * FROM orders WHERE vendor_id = ? ORDER BY created_at DESC", (rid,))
+    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
+@app.route("/restaurants/orders/<int:order_id>", methods=["GET"])
+@restaurant_required
+def restaurant_get_order(order_id):
+    result = execute_with_retry("SELECT restaurant_id FROM users WHERE id = ?", (request.user_id,))
+    if not result or len(result) == 0:
+        return jsonify({"message": "Restaurant ID yok"}), 404
+
+    rid = row_to_dict(result[0])["restaurant_id"]
+    result = execute_with_retry("SELECT * FROM orders WHERE id = ? AND vendor_id = ?", (order_id, rid))
+    if not result or len(result) == 0:
+        return jsonify({"message": "Sipariş bulunamadı"}), 404
+
+    return jsonify(row_to_dict(result[0]))
+
+# Order Endpoints
 @app.route("/webhooks/yemeksepeti", methods=["POST"])
 def webhook_yemeksepeti():
     data = request.get_json() or {}
@@ -1262,10 +1478,9 @@ def webhook_yemeksepeti():
     customer_name = data.get("customer_name") or data.get("customer")
     customer_phone = data.get("customer_phone") or data.get("phone") or data.get("customer_phone_number")
     items = data.get("items")
-    
-    # TOTAL AMOUNT DÜZENLEMESİ - STRING'DEN DOUBLE'A ÇEVİR
+
     total = parse_total_amount(data.get("total") or data.get("total_amount") or 0)
-    
+
     address = data.get("address") or data.get("customer_address")
     payload = json.dumps(data, ensure_ascii=False)
     created = datetime.utcnow().isoformat()
@@ -1276,11 +1491,6 @@ def webhook_yemeksepeti():
             "INSERT INTO orders (order_uuid, external_id, vendor_id, customer_name, customer_phone, items, total_amount, address, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (order_uuid, external_id, vendor_id, customer_name, customer_phone, str(items), total, address, payload, created, created)
         )
-        
-        # Restoran sipariş sayacını güncelle
-        if vendor_id:
-            update_restaurant_order_count(vendor_id)
-            
     except sqlite3.IntegrityError as e:
         app.logger.error(f"❌ Webhook IntegrityError: {e}")
         return jsonify({"message": "Duplicate sipariş", "error": str(e)}), 400
@@ -1303,6 +1513,13 @@ def webhook_yemeksepeti():
 
     order_id = result[0]["id"]
 
+    # Restoranın aylık sipariş sayısını güncelle
+    if vendor_id:
+        execute_write_with_retry(
+            "UPDATE restaurants SET monthly_order_count = monthly_order_count + 1 WHERE restaurant_id = ?",
+            (vendor_id,)
+        )
+
     try:
         assign_order_to_courier(order_id)
     except Exception as e:
@@ -1310,15 +1527,171 @@ def webhook_yemeksepeti():
 
     return jsonify({"message": "Sipariş alındı", "order_uuid": order_uuid}), 201
 
-# Diğer endpoint'ler aynı kalacak, sadece raporlama endpoint'leri eklendi
-@app.route("/admin/trigger-monthly-report", methods=["POST"])
+@app.route("/orders", methods=["GET"])
 @admin_required
-def trigger_monthly_report():
-    result = distribute_monthly_report()
-    if result['success']:
-        return jsonify({"message": "Rapor gönderildi", "email_sent": result.get('email_sent', 0), "report_month": result.get('report_month')})
+def admin_list_orders():
+    status_filter = request.args.get("status")
+    if status_filter:
+        result = execute_with_retry("SELECT * FROM orders WHERE status = ? ORDER BY created_at DESC", (status_filter,))
     else:
-        return jsonify({"message": "Rapor hatası", "error": result.get('error')}), 500
+        result = execute_with_retry("SELECT * FROM orders ORDER BY created_at DESC")
+
+    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
+@app.route("/orders/<int:order_id>", methods=["PATCH"])
+@admin_required
+def admin_patch_order(order_id):
+    data = request.get_json() or {}
+    allowed = ("status", "courier_id", "customer_name", "customer_phone", "items", "total_amount", "address", "vendor_id")
+    fields, values = [], []
+    for k in allowed:
+        if k in data:
+            fields.append(f"{k} = ?")
+            if k == "total_amount":
+                values.append(parse_total_amount(data[k]))
+            else:
+                values.append(data[k])
+    if not fields:
+        return jsonify({"message": "Güncellenecek alan yok"}), 400
+
+    fields.append("updated_at = ?")
+    values.append(datetime.utcnow().isoformat())
+    values.append(order_id)
+
+    execute_write_with_retry(f"UPDATE orders SET {', '.join(fields)} WHERE id = ?", values)
+    return jsonify({"message": "Sipariş güncellendi"})
+
+@app.route("/orders/<int:order_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_order(order_id):
+    execute_write_with_retry("DELETE FROM orders WHERE id = ?", (order_id,))
+    return jsonify({"message": "Sipariş silindi"})
+
+# Restaurant Management
+@app.route("/restaurants", methods=["GET"])
+@admin_required
+def list_restaurants():
+    result = execute_with_retry("SELECT * FROM restaurants ORDER BY name")
+    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
+@app.route("/restaurants", methods=["POST"])
+@admin_required
+def create_restaurant():
+    data = request.get_json() or {}
+    username = data.get("username")
+    password = data.get("password")
+    restaurant_id = data.get("restaurant_id")
+    name = data.get("name")
+    phone = data.get("phone")
+
+    if not username or not password or not restaurant_id or not name or not phone:
+        return jsonify({"message": "username, password, restaurant_id, name, phone gerekli"}), 400
+
+    restaurant_id = str(restaurant_id)
+
+    result = execute_with_retry("SELECT 1 FROM users WHERE username = ?", (username,))
+    if result and len(result) > 0:
+        return jsonify({"message": "Kullanıcı adı kullanılıyor"}), 400
+
+    result = execute_with_retry("SELECT 1 FROM restaurants WHERE restaurant_id = ? OR name = ?", (restaurant_id, name))
+    if result and len(result) > 0:
+        return jsonify({"message": "Restaurant ID veya isim kullanılıyor"}), 400
+
+    hashed = hash_password(password)
+    try:
+        execute_write_with_retry(
+            "INSERT INTO users (username, password_hash, role, created_at, restaurant_id) VALUES (?, ?, 'restaurant', ?, ?)",
+            (username, hashed, datetime.utcnow().isoformat(), restaurant_id)
+        )
+
+        execute_write_with_retry(
+            "INSERT INTO restaurants (restaurant_id, name, fee_per_package, address, phone, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (restaurant_id, name, data.get("fee_per_package", 5.0), data.get("address", ""), phone,
+             data.get("is_active", 1), datetime.utcnow().isoformat())
+        )
+
+        user_row = execute_with_retry(
+            "SELECT id, username, role, created_at, restaurant_id FROM users WHERE username = ?", (username,))
+        rest_row = execute_with_retry("SELECT * FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
+
+        return jsonify({
+            "message": "Restoran oluşturuldu",
+            "user": row_to_dict(user_row[0]) if user_row else None,
+            "restaurant": row_to_dict(rest_row[0]) if rest_row else None
+        }), 201
+
+    except sqlite3.IntegrityError as e:
+        try:
+            execute_write_with_retry("DELETE FROM users WHERE username = ?", (username,))
+        except:
+            pass
+        return jsonify({"message": "Integrity error", "error": str(e)}), 400
+    except Exception as e:
+        try:
+            execute_write_with_retry("DELETE FROM users WHERE username = ?", (username,))
+            execute_write_with_retry("DELETE FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
+        except:
+            pass
+        return jsonify({"message": "Sunucu hatası", "error": str(e)}), 500
+
+@app.route("/restaurants/<restaurant_id>", methods=["PATCH"])
+@admin_required
+def update_restaurant(restaurant_id):
+    data = request.get_json() or {}
+    allowed = ("restaurant_id", "name", "fee_per_package", "address", "phone", "is_active", "monthly_order_count")
+    fields, values = [], []
+    for k in allowed:
+        if k in data:
+            fields.append(f"{k} = ?")
+            values.append(data[k])
+    if not fields:
+        return jsonify({"message": "Güncellenecek alan yok"}), 400
+
+    values.append(restaurant_id)
+    try:
+        execute_write_with_retry(f"UPDATE restaurants SET {', '.join(fields)} WHERE restaurant_id = ?", values)
+        return jsonify({"message": "Restoran güncellendi"})
+    except sqlite3.IntegrityError as e:
+        return jsonify({"message": "Integrity error", "error": str(e)}), 400
+
+@app.route("/restaurants/<restaurant_id>", methods=["DELETE"])
+@admin_required
+def delete_restaurant(restaurant_id):
+    execute_write_with_retry("DELETE FROM users WHERE restaurant_id = ?", (restaurant_id,))
+    execute_write_with_retry("DELETE FROM restaurants WHERE restaurant_id = ?", (restaurant_id,))
+    return jsonify({"message": "Restoran silindi"})
+
+
+# Neighborhood Management
+@app.route("/neighborhoods", methods=["GET"])
+@token_required
+def list_neighborhoods():
+    result = execute_with_retry("SELECT * FROM neighborhoods ORDER BY name")
+    return jsonify([row_to_dict(r) for r in result]) if result else jsonify([])
+
+@app.route("/neighborhoods", methods=["POST"])
+@admin_required
+def create_neighborhood():
+    data = request.get_json() or {}
+    name = data.get("name")
+
+    if not name:
+        return jsonify({"message": "Mahalle adı gerekli"}), 400
+
+    try:
+        execute_write_with_retry("INSERT INTO neighborhoods (name, created_at) VALUES (?, ?)",
+                                 (name, datetime.utcnow().isoformat()))
+        result = execute_with_retry("SELECT * FROM neighborhoods WHERE name = ?", (name,))
+        neighborhood = row_to_dict(result[0]) if result and len(result) > 0 else None
+        return jsonify({"message": "Mahalle oluşturuldu", "neighborhood": neighborhood}), 201
+    except sqlite3.IntegrityError:
+        return jsonify({"message": "Bu mahalle zaten var"}), 400
+
+@app.route("/neighborhoods/<int:neighborhood_id>", methods=["DELETE"])
+@admin_required
+def delete_neighborhood(neighborhood_id):
+    execute_write_with_retry("DELETE FROM neighborhoods WHERE id = ?", (neighborhood_id,))
+    return jsonify({"message": "Mahalle silindi"})
 
 # Health Check
 @app.route("/")
@@ -1330,7 +1703,6 @@ if __name__ == "__main__":
     app.logger.info("🚀 Flask başlatılıyor...")
     check_firebase_setup()
 
-    # SUNUCU SAATİ KONTROLÜ
     now_utc = datetime.utcnow()
     now_local = datetime.now()
     app.logger.info(f"⏰ UTC zamanı: {now_utc.isoformat()}")
@@ -1348,6 +1720,5 @@ if __name__ == "__main__":
     app.logger.info("✅ Veritabanı hazır")
     app.logger.info("✅ WebSocket aktif")
     app.logger.info("✅ Zamanlayıcı aktif")
-    app.logger.info("✅ Raporlama sistemi aktif")
 
     socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
