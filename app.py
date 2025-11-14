@@ -1,4 +1,4 @@
-# app.py - TAMAMEN GÜNCEL VE EKSİKSİZ VERSİYON
+# app.py - TAMAMEN GÜNCEL VE EKSİKSİZ VERSİYON (NOT EKLENDİ)
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit, join_room
 from datetime import datetime, timedelta
@@ -282,6 +282,7 @@ def init_db():
         items TEXT,
         total_amount REAL,
         address TEXT,
+        note TEXT,
         status TEXT DEFAULT 'yeni',
         courier_id INTEGER,
         payload TEXT,
@@ -344,7 +345,8 @@ def init_db():
         ('courier_performance', 'current_neighborhood_id', 'INTEGER'),
         ('orders', 'customer_phone', 'TEXT'),
         ('restaurants', 'monthly_order_count', 'INTEGER'),
-        ('courier_performance', 'monthly_orders', 'INTEGER')
+        ('courier_performance', 'monthly_orders', 'INTEGER'),
+        ('orders', 'note', 'TEXT')  # YENİ: note alanı eklendi
     ]
 
     for table, column, col_type in migrations:
@@ -956,7 +958,8 @@ def assign_order_to_courier(order_id):
                 'customer_phone': order.get('customer_phone', ''),
                 'address': order['address'],
                 'total_amount': order['total_amount'],
-                'items': order['items']
+                'items': order['items'],
+                'note': order.get('note', '')  # YENİ: note eklendi
             })
 
         return True
@@ -1253,6 +1256,7 @@ def admin_reassign_order(order_id):
                 'address': order_data['address'],
                 'total_amount': order_data['total_amount'],
                 'items': order_data['items'],
+                'note': order_data.get('note', ''),  # YENİ: note eklendi
                 'reassigned': True
             })
 
@@ -1589,6 +1593,9 @@ def webhook_yemeksepeti():
     customer_name = data.get("customer_name") or data.get("customer")
     customer_phone = data.get("customer_phone") or data.get("phone") or data.get("customer_phone_number")
     items = data.get("items")
+    
+    # YENİ: note alanını al
+    note = data.get("note") or data.get("customer_note") or data.get("order_note") or ""
 
     total = parse_total_amount(data.get("total") or data.get("total_amount") or 0)
 
@@ -1599,8 +1606,8 @@ def webhook_yemeksepeti():
 
     try:
         ok = execute_write_with_retry(
-            "INSERT INTO orders (order_uuid, external_id, vendor_id, customer_name, customer_phone, items, total_amount, address, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (order_uuid, external_id, vendor_id, customer_name, customer_phone, str(items), total, address, payload, created, created)
+            "INSERT INTO orders (order_uuid, external_id, vendor_id, customer_name, customer_phone, items, total_amount, address, note, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (order_uuid, external_id, vendor_id, customer_name, customer_phone, str(items), total, address, note, payload, created, created)
         )
     except sqlite3.IntegrityError as e:
         app.logger.error(f"❌ Webhook IntegrityError: {e}")
@@ -1653,7 +1660,7 @@ def admin_list_orders():
 @admin_required
 def admin_patch_order(order_id):
     data = request.get_json() or {}
-    allowed = ("status", "courier_id", "customer_name", "customer_phone", "items", "total_amount", "address", "vendor_id")
+    allowed = ("status", "courier_id", "customer_name", "customer_phone", "items", "total_amount", "address", "vendor_id", "note")  # YENİ: note eklendi
     fields, values = [], []
     for k in allowed:
         if k in data:
@@ -1832,5 +1839,6 @@ if __name__ == "__main__":
     app.logger.info("✅ WebSocket aktif")
     app.logger.info("✅ Zamanlayıcı aktif")
     app.logger.info("✅ Yeni aylık rapor sistemi aktif")
+    app.logger.info("✅ Note alanı eklendi - Yemeksepeti webhook desteği")
 
     socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
